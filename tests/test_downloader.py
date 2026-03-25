@@ -157,3 +157,10 @@ def test_download_image_bytes_accepts_various_image_types():
         with patch("downloader.requests.get", return_value=mock_response):
             result = downloader.download_image_bytes("https://example.com/img")
         assert result == b"bytes"
+
+
+def test_download_image_bytes_raises_on_request_exception():
+    import downloader
+    with patch("downloader.requests.get", side_effect=requests.RequestException("connection refused")):
+        with pytest.raises(requests.RequestException):
+            downloader.download_image_bytes("https://example.com/img.jpg")
