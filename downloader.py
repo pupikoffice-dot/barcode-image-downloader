@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+import requests
 from dotenv import dotenv_values
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -76,3 +77,27 @@ def search_image_url(barcode: str, api_key: str, cx_id: str) -> str | None:
     if not items:
         return None
     return items[0].get("link")
+
+
+def download_image_bytes(url: str, timeout: int = 10) -> bytes:
+    """Download raw image bytes from a URL.
+
+    Args:
+        url: Direct URL to the image.
+        timeout: Request timeout in seconds. Default 10.
+
+    Returns:
+        Raw bytes of the image.
+
+    Raises:
+        ValueError: if Content-Type header is not an image type.
+        requests.HTTPError: if the HTTP response status is not 2xx.
+        requests.Timeout: if the request times out.
+        requests.RequestException: for other network errors.
+    """
+    response = requests.get(url, timeout=timeout)
+    response.raise_for_status()
+    content_type = response.headers.get("Content-Type", "")
+    if not content_type.startswith("image/"):
+        raise ValueError(f"URL did not return an image (Content-Type: {content_type!r})")
+    return response.content

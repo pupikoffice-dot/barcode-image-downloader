@@ -1,6 +1,7 @@
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import requests
 
 
 def test_load_credentials_returns_keys(tmp_path):
@@ -103,3 +104,56 @@ def test_search_image_url_raises_http_error():
     with patch("downloader.build", return_value=mock_service):
         with pytest.raises(HttpError):
             downloader.search_image_url("1234567890", "fakekey", "fakecx")
+
+
+def test_download_image_bytes_returns_content():
+    import downloader
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {"Content-Type": "image/jpeg"}
+    mock_response.content = b"fakeimagebytes"
+    mock_response.raise_for_status.return_value = None
+    with patch("downloader.requests.get", return_value=mock_response):
+        result = downloader.download_image_bytes("https://example.com/img.jpg")
+    assert result == b"fakeimagebytes"
+
+
+def test_download_image_bytes_raises_on_non_image_content_type():
+    import downloader
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {"Content-Type": "text/html"}
+    mock_response.content = b"<html>"
+    mock_response.raise_for_status.return_value = None
+    with patch("downloader.requests.get", return_value=mock_response):
+        with pytest.raises(ValueError, match="Content-Type"):
+            downloader.download_image_bytes("https://example.com/page.html")
+
+
+def test_download_image_bytes_raises_on_http_error():
+    import downloader
+    mock_response = MagicMock()
+    mock_response.raise_for_status.side_effect = requests.HTTPError("404")
+    with patch("downloader.requests.get", return_value=mock_response):
+        with pytest.raises(requests.HTTPError):
+            downloader.download_image_bytes("https://example.com/missing.jpg")
+
+
+def test_download_image_bytes_raises_on_timeout():
+    import downloader
+    with patch("downloader.requests.get", side_effect=requests.Timeout):
+        with pytest.raises(requests.Timeout):
+            downloader.download_image_bytes("https://example.com/slow.jpg")
+
+
+def test_download_image_bytes_accepts_various_image_types():
+    import downloader
+    for ct in ("image/png", "image/webp", "image/gif"):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": ct}
+        mock_response.content = b"bytes"
+        mock_response.raise_for_status.return_value = None
+        with patch("downloader.requests.get", return_value=mock_response):
+            result = downloader.download_image_bytes("https://example.com/img")
+        assert result == b"bytes"
