@@ -1,3 +1,4 @@
+import io
 import re
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import requests
 from dotenv import dotenv_values
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from PIL import Image
 
 
 _ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|]')
@@ -101,3 +103,26 @@ def download_image_bytes(url: str, timeout: int = 10) -> bytes:
     if not content_type.startswith("image/"):
         raise ValueError(f"URL did not return an image (Content-Type: {content_type!r})")
     return response.content
+
+
+def save_as_jpg(image_bytes: bytes, output_path: str) -> None:
+    """Convert raw image bytes to JPEG and save to disk.
+
+    Handles PNG, WebP, GIF (first frame), and other PIL-supported formats.
+    Converts RGBA/P mode images to RGB before saving as JPEG.
+
+    Args:
+        image_bytes: Raw bytes of the source image (any PIL-supported format).
+        output_path: Full path to write the .jpg file, including filename.
+
+    Raises:
+        PIL.UnidentifiedImageError: if bytes are not a recognizable image format.
+        OSError: if the output path is not writable.
+    """
+    image = Image.open(io.BytesIO(image_bytes))
+    # Convert palette or RGBA to RGB so JPEG encoder accepts it
+    if image.mode in ("RGBA", "P", "LA"):
+        image = image.convert("RGB")
+    elif image.mode != "RGB":
+        image = image.convert("RGB")
+    image.save(output_path, format="JPEG", quality=90)

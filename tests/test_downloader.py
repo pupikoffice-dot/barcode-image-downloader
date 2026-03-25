@@ -164,3 +164,59 @@ def test_download_image_bytes_raises_on_request_exception():
     with patch("downloader.requests.get", side_effect=requests.RequestException("connection refused")):
         with pytest.raises(requests.RequestException):
             downloader.download_image_bytes("https://example.com/img.jpg")
+
+
+def test_save_as_jpg_creates_file(tmp_path):
+    import downloader
+    from PIL import Image
+    import io
+    # Create a real PNG in memory
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10), color=(255, 0, 0)).save(buf, format="PNG")
+    out = str(tmp_path / "test.jpg")
+    downloader.save_as_jpg(buf.getvalue(), out)
+    assert (tmp_path / "test.jpg").exists()
+
+
+def test_save_as_jpg_output_is_valid_jpeg(tmp_path):
+    import downloader
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10)).save(buf, format="PNG")
+    out = str(tmp_path / "out.jpg")
+    downloader.save_as_jpg(buf.getvalue(), out)
+    loaded = Image.open(out)
+    assert loaded.format == "JPEG"
+
+
+def test_save_as_jpg_converts_rgba(tmp_path):
+    import downloader
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGBA", (10, 10), (0, 255, 0, 128)).save(buf, format="PNG")
+    out = str(tmp_path / "rgba.jpg")
+    downloader.save_as_jpg(buf.getvalue(), out)
+    loaded = Image.open(out)
+    assert loaded.mode == "RGB"
+
+
+def test_save_as_jpg_converts_png_palette(tmp_path):
+    import downloader
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    img = Image.new("RGB", (10, 10)).convert("P")
+    img.save(buf, format="PNG")
+    out = str(tmp_path / "palette.jpg")
+    downloader.save_as_jpg(buf.getvalue(), out)
+    loaded = Image.open(out)
+    assert loaded.format == "JPEG"
+
+
+def test_save_as_jpg_raises_on_invalid_bytes(tmp_path):
+    import downloader
+    from PIL import UnidentifiedImageError
+    with pytest.raises(UnidentifiedImageError):
+        downloader.save_as_jpg(b"notanimage", str(tmp_path / "bad.jpg"))
