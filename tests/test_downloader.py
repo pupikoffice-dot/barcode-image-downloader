@@ -31,3 +31,23 @@ def test_load_credentials_empty_cx(tmp_path):
     import downloader
     with pytest.raises(ValueError, match="GOOGLE_CX_ID"):
         downloader.load_credentials(env_path=str(env_file))
+
+
+def test_sanitize_strips_whitespace():
+    import downloader
+    assert downloader.sanitize_barcode("  1234  ") == "1234"
+
+
+def test_sanitize_replaces_illegal_chars():
+    import downloader
+    assert downloader.sanitize_barcode('bar:code/test*now?"<>|\\') == "bar_code_test_now______"
+
+
+def test_sanitize_plain_barcode_unchanged():
+    import downloader
+    assert downloader.sanitize_barcode("1234567890123") == "1234567890123"
+
+
+def test_sanitize_empty_returns_empty():
+    import downloader
+    assert downloader.sanitize_barcode("   ") == ""

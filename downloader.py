@@ -1,6 +1,15 @@
+import re
 from pathlib import Path
 
 from dotenv import dotenv_values
+
+
+_ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|]')
+
+
+def sanitize_barcode(barcode: str) -> str:
+    """Strip whitespace and replace Windows-illegal filename chars with '_'."""
+    return _ILLEGAL_CHARS.sub("_", barcode.strip())
 
 
 def load_credentials(env_path: str | None = None) -> tuple[str, str]:
