@@ -51,3 +51,13 @@ def test_sanitize_plain_barcode_unchanged():
 def test_sanitize_empty_returns_empty():
     import downloader
     assert downloader.sanitize_barcode("   ") == ""
+
+
+def test_sanitize_dot_barcode_guarded():
+    import downloader
+    assert downloader.sanitize_barcode(".") == "_."
+
+
+def test_sanitize_dotdot_barcode_guarded():
+    import downloader
+    assert downloader.sanitize_barcode("..") == "_.."

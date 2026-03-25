@@ -8,8 +8,16 @@ _ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|]')
 
 
 def sanitize_barcode(barcode: str) -> str:
-    """Strip whitespace and replace Windows-illegal filename chars with '_'."""
-    return _ILLEGAL_CHARS.sub("_", barcode.strip())
+    """Strip whitespace and replace Windows-illegal filename chars with '_'.
+
+    Returns:
+        An empty string if the input is blank after stripping; callers
+        should check for this before using the result as a filename.
+    """
+    result = _ILLEGAL_CHARS.sub("_", barcode.strip())
+    if result in (".", ".."):
+        result = "_" + result
+    return result
 
 
 def load_credentials(env_path: str | None = None) -> tuple[str, str]:
