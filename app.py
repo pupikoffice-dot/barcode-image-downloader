@@ -37,7 +37,7 @@ class App(ctk.CTk):
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)   # text area row expands
+        self.grid_rowconfigure(2, weight=1)   # barcode textbox row expands
 
         # Title
         ctk.CTkLabel(
@@ -98,7 +98,7 @@ class App(ctk.CTk):
     def _validate_credentials(self) -> None:
         try:
             load_credentials(env_path=ENV_PATH)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             self._log(f"[ERROR] {exc}")
             self._log("[INFO] Create a .env file next to app.py with GOOGLE_API_KEY and GOOGLE_CX_ID.")
             self._download_btn.configure(state="disabled")
@@ -196,6 +196,8 @@ class App(ctk.CTk):
                 subprocess.Popen(["open", self._output_dir])
             else:
                 subprocess.Popen(["xdg-open", self._output_dir])
+        else:
+            self._log("[WARN] Output folder no longer exists.")
 
     # ------------------------------------------------------------------ #
     #  Log helper                                                          #
