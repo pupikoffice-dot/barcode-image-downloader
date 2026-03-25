@@ -109,7 +109,7 @@ def save_as_jpg(image_bytes: bytes, output_path: str) -> None:
     """Convert raw image bytes to JPEG and save to disk.
 
     Handles PNG, WebP, GIF (first frame), and other PIL-supported formats.
-    Converts RGBA/P mode images to RGB before saving as JPEG.
+    Converts RGBA, P, LA, and other non-RGB modes to RGB before saving as JPEG.
 
     Args:
         image_bytes: Raw bytes of the source image (any PIL-supported format).
@@ -120,9 +120,7 @@ def save_as_jpg(image_bytes: bytes, output_path: str) -> None:
         OSError: if the output path is not writable.
     """
     image = Image.open(io.BytesIO(image_bytes))
-    # Convert palette or RGBA to RGB so JPEG encoder accepts it
-    if image.mode in ("RGBA", "P", "LA"):
-        image = image.convert("RGB")
-    elif image.mode != "RGB":
+    # Convert to RGB (JPEG requires it; handles RGBA, P, LA, etc.)
+    if image.mode != "RGB":
         image = image.convert("RGB")
     image.save(output_path, format="JPEG", quality=90)

@@ -213,6 +213,7 @@ def test_save_as_jpg_converts_png_palette(tmp_path):
     downloader.save_as_jpg(buf.getvalue(), out)
     loaded = Image.open(out)
     assert loaded.format == "JPEG"
+    assert loaded.mode == "RGB"
 
 
 def test_save_as_jpg_raises_on_invalid_bytes(tmp_path):
@@ -220,3 +221,15 @@ def test_save_as_jpg_raises_on_invalid_bytes(tmp_path):
     from PIL import UnidentifiedImageError
     with pytest.raises(UnidentifiedImageError):
         downloader.save_as_jpg(b"notanimage", str(tmp_path / "bad.jpg"))
+
+
+def test_save_as_jpg_converts_la_mode(tmp_path):
+    import downloader
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("LA", (10, 10)).save(buf, format="PNG")
+    out = str(tmp_path / "la.jpg")
+    downloader.save_as_jpg(buf.getvalue(), out)
+    loaded = Image.open(out)
+    assert loaded.mode == "RGB"
