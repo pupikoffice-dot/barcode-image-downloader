@@ -271,6 +271,7 @@ def test_process_barcode_returns_error_on_empty_after_sanitize(tmp_path):
     import downloader
     result = downloader.process_barcode("   ", str(tmp_path), "key", "cx")
     assert result.status == "error"
+    assert "empty" in result.message.lower()
 
 
 def test_run_batch_calls_progress_callback(tmp_path):
@@ -284,6 +285,9 @@ def test_run_batch_calls_progress_callback(tmp_path):
 
 def test_run_batch_returns_all_results(tmp_path):
     import downloader
-    with patch("downloader.process_barcode", return_value=downloader.BarcodeResult("123", "saved", "ok")):
+    r1 = downloader.BarcodeResult("a", "saved", "ok")
+    r2 = downloader.BarcodeResult("b", "no_image", "none")
+    r3 = downloader.BarcodeResult("c", "error", "fail")
+    with patch("downloader.process_barcode", side_effect=[r1, r2, r3]):
         results = downloader.run_batch(["a", "b", "c"], str(tmp_path), "key", "cx")
-    assert len(results) == 3
+    assert results == [r1, r2, r3]
