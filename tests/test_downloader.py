@@ -233,3 +233,57 @@ def test_save_as_jpg_converts_la_mode(tmp_path):
     downloader.save_as_jpg(buf.getvalue(), out)
     loaded = Image.open(out)
     assert loaded.mode == "RGB"
+
+
+def test_process_barcode_returns_saved_on_success(tmp_path):
+    import downloader
+    with patch("downloader.search_image_url", return_value="https://img.example.com/a.jpg"), \
+         patch("downloader.download_image_bytes", return_value=b"bytes"), \
+         patch("downloader.save_as_jpg") as mock_save:
+        result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
+    assert result.status == "saved"
+    assert "1234567890.jpg" in result.message
+
+
+def test_process_barcode_skips_existing_file(tmp_path):
+    import downloader
+    (tmp_path / "1234567890.jpg").write_bytes(b"existing")
+    result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
+    assert result.status == "skipped"
+
+
+def test_process_barcode_returns_no_image_when_url_none(tmp_path):
+    import downloader
+    with patch("downloader.search_image_url", return_value=None):
+        result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
+    assert result.status == "no_image"
+
+
+def test_process_barcode_returns_error_on_search_exception(tmp_path):
+    import downloader
+    with patch("downloader.search_image_url", side_effect=Exception("API down")):
+        result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
+    assert result.status == "error"
+    assert "API down" in result.message
+
+
+def test_process_barcode_returns_error_on_empty_after_sanitize(tmp_path):
+    import downloader
+    result = downloader.process_barcode("   ", str(tmp_path), "key", "cx")
+    assert result.status == "error"
+
+
+def test_run_batch_calls_progress_callback(tmp_path):
+    import downloader
+    with patch("downloader.process_barcode", return_value=downloader.BarcodeResult("123", "saved", "ok")):
+        calls = []
+        downloader.run_batch(["123", "456"], str(tmp_path), "key", "cx",
+                             progress_callback=lambda r, i, t: calls.append((i, t)))
+    assert calls == [(1, 2), (2, 2)]
+
+
+def test_run_batch_returns_all_results(tmp_path):
+    import downloader
+    with patch("downloader.process_barcode", return_value=downloader.BarcodeResult("123", "saved", "ok")):
+        results = downloader.run_batch(["a", "b", "c"], str(tmp_path), "key", "cx")
+    assert len(results) == 3

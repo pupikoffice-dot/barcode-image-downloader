@@ -1,6 +1,11 @@
 import io
+import os
 import re
+import threading
+import queue
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import requests
 from dotenv import dotenv_values
@@ -124,3 +129,86 @@ def save_as_jpg(image_bytes: bytes, output_path: str) -> None:
     if image.mode != "RGB":
         image = image.convert("RGB")
     image.save(output_path, format="JPEG", quality=90)
+
+
+@dataclass
+class BarcodeResult:
+    """Result of processing a single barcode."""
+    barcode: str
+    status: str          # "saved" | "skipped" | "no_image" | "error"
+    message: str         # Human-readable detail
+
+
+def process_barcode(
+    barcode: str,
+    output_dir: str,
+    api_key: str,
+    cx_id: str,
+) -> BarcodeResult:
+    """Search, download, and save a single barcode image.
+
+    Args:
+        barcode: Raw barcode string (will be sanitized internally).
+        output_dir: Directory to save the JPG file.
+        api_key: Google API key.
+        cx_id: Custom Search Engine ID.
+
+    Returns:
+        BarcodeResult with status "saved", "skipped", "no_image", or "error".
+    """
+    safe = sanitize_barcode(barcode)
+    if not safe:
+        return BarcodeResult(barcode=barcode, status="error", message="Barcode is empty after sanitization")
+
+    output_path = os.path.join(output_dir, f"{safe}.jpg")
+
+    # Skip if already downloaded
+    if os.path.exists(output_path):
+        return BarcodeResult(barcode=barcode, status="skipped", message=f"{safe}.jpg already exists")
+
+    # Search for image URL
+    try:
+        url = search_image_url(safe, api_key, cx_id)
+    except Exception as exc:
+        return BarcodeResult(barcode=barcode, status="error", message=f"Search failed: {exc}")
+
+    if url is None:
+        return BarcodeResult(barcode=barcode, status="no_image", message="No image found on Google")
+
+    # Download and save
+    try:
+        image_bytes = download_image_bytes(url)
+        save_as_jpg(image_bytes, output_path)
+    except Exception as exc:
+        return BarcodeResult(barcode=barcode, status="error", message=f"Download/save failed: {exc}")
+
+    return BarcodeResult(barcode=barcode, status="saved", message=f"Saved as {safe}.jpg")
+
+
+def run_batch(
+    barcodes: list[str],
+    output_dir: str,
+    api_key: str,
+    cx_id: str,
+    progress_callback: Callable[[BarcodeResult, int, int], None] | None = None,
+) -> list[BarcodeResult]:
+    """Process a list of barcodes sequentially.
+
+    Args:
+        barcodes: List of raw barcode strings.
+        output_dir: Directory to save JPG files.
+        api_key: Google API key.
+        cx_id: Custom Search Engine ID.
+        progress_callback: Optional callable(result, index, total) called after each barcode.
+
+    Returns:
+        List of BarcodeResult, one per barcode.
+    """
+    results = []
+    total = len(barcodes)
+    for i, barcode in enumerate(barcodes):
+        result = process_barcode(barcode, output_dir, api_key, cx_id)
+        results.append(result)
+        if progress_callback:
+            progress_callback(result, i + 1, total)
+    return results
