@@ -1,0 +1,39 @@
+import io
+import os
+import queue
+import threading
+from pathlib import Path
+
+import requests
+from dotenv import dotenv_values
+from PIL import Image
+
+
+def load_credentials(env_path: str | None = None) -> tuple[str, str]:
+    """Load GOOGLE_API_KEY and GOOGLE_CX_ID from .env file.
+
+    Args:
+        env_path: Path to .env file. Defaults to .env next to this script.
+
+    Returns:
+        (api_key, cx_id) tuple.
+
+    Raises:
+        ValueError: if file is missing or either key is empty.
+    """
+    if env_path is None:
+        env_path = str(Path(__file__).parent / ".env")
+
+    if not Path(env_path).exists():
+        raise ValueError(f".env file missing at {env_path}")
+
+    config = dotenv_values(env_path)
+    api_key = config.get("GOOGLE_API_KEY", "").strip()
+    cx_id = config.get("GOOGLE_CX_ID", "").strip()
+
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY is missing or empty in .env")
+    if not cx_id:
+        raise ValueError("GOOGLE_CX_ID is missing or empty in .env")
+
+    return api_key, cx_id
