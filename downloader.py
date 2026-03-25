@@ -1,7 +1,10 @@
 import re
 from pathlib import Path
 
+import requests
 from dotenv import dotenv_values
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 
 _ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|]')
@@ -48,3 +51,29 @@ def load_credentials(env_path: str | None = None) -> tuple[str, str]:
         raise ValueError("GOOGLE_CX_ID is missing or empty in .env")
 
     return api_key, cx_id
+
+
+def search_image_url(barcode: str, api_key: str, cx_id: str) -> str | None:
+    """Search Google Custom Search for a product image URL.
+
+    Args:
+        barcode: The barcode string (already sanitized).
+        api_key: Google API key.
+        cx_id: Custom Search Engine ID.
+
+    Returns:
+        URL of first image result, or None if no results found.
+
+    Raises:
+        HttpError: if the Google API returns an error response.
+    """
+    service = build("customsearch", "v1", developerKey=api_key)
+    result = (
+        service.cse()
+        .list(q=f"{barcode} product image", cx=cx_id, searchType="image", num=1)
+        .execute()
+    )
+    items = result.get("items", [])
+    if not items:
+        return None
+    return items[0].get("link")

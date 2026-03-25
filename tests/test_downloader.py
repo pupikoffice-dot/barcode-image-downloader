@@ -1,5 +1,6 @@
 import pytest
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 
 def test_load_credentials_returns_keys(tmp_path):
@@ -61,3 +62,32 @@ def test_sanitize_dot_barcode_guarded():
 def test_sanitize_dotdot_barcode_guarded():
     import downloader
     assert downloader.sanitize_barcode("..") == "_.."
+
+
+def test_search_image_url_returns_link(monkeypatch):
+    import downloader
+    mock_service = MagicMock()
+    mock_service.cse().list().execute.return_value = {
+        "items": [{"link": "https://example.com/image.jpg"}]
+    }
+    with patch("downloader.build", return_value=mock_service):
+        url = downloader.search_image_url("1234567890", "fakekey", "fakecx")
+    assert url == "https://example.com/image.jpg"
+
+
+def test_search_image_url_returns_none_when_no_items(monkeypatch):
+    import downloader
+    mock_service = MagicMock()
+    mock_service.cse().list().execute.return_value = {"items": []}
+    with patch("downloader.build", return_value=mock_service):
+        url = downloader.search_image_url("1234567890", "fakekey", "fakecx")
+    assert url is None
+
+
+def test_search_image_url_returns_none_when_missing_items_key(monkeypatch):
+    import downloader
+    mock_service = MagicMock()
+    mock_service.cse().list().execute.return_value = {}
+    with patch("downloader.build", return_value=mock_service):
+        url = downloader.search_image_url("1234567890", "fakekey", "fakecx")
+    assert url is None
