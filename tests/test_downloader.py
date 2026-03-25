@@ -64,7 +64,7 @@ def test_sanitize_dotdot_barcode_guarded():
     assert downloader.sanitize_barcode("..") == "_.."
 
 
-def test_search_image_url_returns_link(monkeypatch):
+def test_search_image_url_returns_link():
     import downloader
     mock_service = MagicMock()
     mock_service.cse().list().execute.return_value = {
@@ -75,7 +75,7 @@ def test_search_image_url_returns_link(monkeypatch):
     assert url == "https://example.com/image.jpg"
 
 
-def test_search_image_url_returns_none_when_no_items(monkeypatch):
+def test_search_image_url_returns_none_when_no_items():
     import downloader
     mock_service = MagicMock()
     mock_service.cse().list().execute.return_value = {"items": []}
@@ -84,10 +84,22 @@ def test_search_image_url_returns_none_when_no_items(monkeypatch):
     assert url is None
 
 
-def test_search_image_url_returns_none_when_missing_items_key(monkeypatch):
+def test_search_image_url_returns_none_when_missing_items_key():
     import downloader
     mock_service = MagicMock()
     mock_service.cse().list().execute.return_value = {}
     with patch("downloader.build", return_value=mock_service):
         url = downloader.search_image_url("1234567890", "fakekey", "fakecx")
     assert url is None
+
+
+def test_search_image_url_raises_http_error():
+    import downloader
+    from googleapiclient.errors import HttpError
+    import httplib2
+    mock_service = MagicMock()
+    mock_resp = httplib2.Response({"status": "403"})
+    mock_service.cse().list().execute.side_effect = HttpError(mock_resp, b"forbidden")
+    with patch("downloader.build", return_value=mock_service):
+        with pytest.raises(HttpError):
+            downloader.search_image_url("1234567890", "fakekey", "fakecx")

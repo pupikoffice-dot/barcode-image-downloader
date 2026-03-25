@@ -1,7 +1,6 @@
 import re
 from pathlib import Path
 
-import requests
 from dotenv import dotenv_values
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -62,7 +61,7 @@ def search_image_url(barcode: str, api_key: str, cx_id: str) -> str | None:
         cx_id: Custom Search Engine ID.
 
     Returns:
-        URL of first image result, or None if no results found.
+        URL of first image result, or None if no results or no link in first result.
 
     Raises:
         HttpError: if the Google API returns an error response.
