@@ -1,12 +1,6 @@
-import io
-import os
-import queue
-import threading
 from pathlib import Path
 
-import requests
 from dotenv import dotenv_values
-from PIL import Image
 
 
 def load_credentials(env_path: str | None = None) -> tuple[str, str]:
