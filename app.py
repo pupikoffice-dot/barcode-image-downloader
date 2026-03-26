@@ -157,7 +157,7 @@ class App(ctk.CTk):
         # Load credentials — show error and stop if invalid
         try:
             api_key, cx_id = load_credentials(env_path=ENV_PATH)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             messagebox.showerror("Credentials Error", str(exc))
             return
 
@@ -178,14 +178,18 @@ class App(ctk.CTk):
         def on_progress(result: BarcodeResult, idx: int, total: int) -> None:
             self.after(0, self._on_result, result, idx, total)
 
-        run_batch(
-            barcodes=barcodes,
-            output_dir=self._output_dir,
-            api_key=api_key,
-            cx_id=cx_id,
-            progress_callback=on_progress,
-        )
-        self.after(0, self._on_batch_done)
+        try:
+            run_batch(
+                barcodes=barcodes,
+                output_dir=self._output_dir,
+                api_key=api_key,
+                cx_id=cx_id,
+                progress_callback=on_progress,
+            )
+        except Exception as exc:
+            self.after(0, lambda: self._log(f"[ERROR] Unexpected error: {exc}"))
+        finally:
+            self.after(0, self._on_batch_done)
 
     def _on_result(self, result: BarcodeResult, idx: int, total: int) -> None:
         self._progress.set(idx / total)
@@ -206,7 +210,10 @@ class App(ctk.CTk):
 
     def _open_folder(self) -> None:
         if self._output_dir and os.path.isdir(self._output_dir):
-            os.startfile(self._output_dir)
+            if hasattr(os, "startfile"):
+                os.startfile(self._output_dir)
+            else:
+                messagebox.showinfo("Open Folder", f"Folder: {self._output_dir}")
         else:
             messagebox.showwarning("Open Folder", "Output folder no longer exists.")
 
@@ -226,6 +233,10 @@ class App(ctk.CTk):
         self._log_box.configure(state="disabled")
 
 
-if __name__ == "__main__":
+def main() -> None:
     app = App()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
