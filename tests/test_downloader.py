@@ -243,6 +243,7 @@ def test_process_barcode_returns_saved_on_success(tmp_path):
         result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
     assert result.status == "saved"
     assert "1234567890.jpg" in result.message
+    mock_save.assert_called_once()
 
 
 def test_process_barcode_skips_existing_file(tmp_path):

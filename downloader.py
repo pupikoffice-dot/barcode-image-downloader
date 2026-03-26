@@ -3,7 +3,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import requests
 from dotenv import dotenv_values
@@ -133,7 +133,7 @@ def save_as_jpg(image_bytes: bytes, output_path: str) -> None:
 class BarcodeResult:
     """Result of processing a single barcode."""
     barcode: str
-    status: str          # "saved" | "skipped" | "no_image" | "error"
+    status: Literal["saved", "skipped", "no_image", "error"]
     message: str         # Human-readable detail
 
 
@@ -158,6 +158,9 @@ def process_barcode(
     if not safe:
         return BarcodeResult(barcode=barcode, status="error", message="Barcode is empty after sanitization")
 
+    if not os.path.isdir(output_dir):
+        return BarcodeResult(barcode=barcode, status="error", message=f"Output directory does not exist: {output_dir}")
+
     output_path = os.path.join(output_dir, f"{safe}.jpg")
 
     # Skip if already downloaded
@@ -166,7 +169,7 @@ def process_barcode(
 
     # Search for image URL
     try:
-        url = search_image_url(safe, api_key, cx_id)
+        url = search_image_url(barcode, api_key, cx_id)
     except Exception as exc:
         return BarcodeResult(barcode=barcode, status="error", message=f"Search failed: {exc}")
 
