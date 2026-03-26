@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 import threading
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
@@ -17,19 +15,25 @@ ctk.set_default_color_theme("blue")
 
 ENV_PATH = str(Path(__file__).parent / ".env")
 
+_STATUS_PREFIX = {
+    "saved": "[SAVED]",
+    "skipped": "[SKIP]",
+    "no_image": "[WARN]",
+    "error": "[ERROR]",
+}
+
 
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Barcode Image Downloader")
-        self.geometry("700x620")
+        self.geometry("700x600")
         self.resizable(False, False)
 
         self._output_dir: str = ""
         self._running = False
 
         self._build_ui()
-        self._validate_credentials()
 
     # ------------------------------------------------------------------ #
     #  UI construction                                                     #
@@ -37,71 +41,78 @@ class App(ctk.CTk):
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)   # barcode textbox row expands
 
-        # Title
-        ctk.CTkLabel(
-            self, text="Barcode Image Downloader",
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, pady=(16, 4), padx=20, sticky="w")
-
-        # Barcode input area
+        # 1. Label: barcode input
         ctk.CTkLabel(
             self, text="Paste barcodes (one per line):",
-        ).grid(row=1, column=0, padx=20, pady=(4, 0), sticky="w")
+        ).grid(row=0, column=0, padx=20, pady=(16, 0), sticky="w")
 
-        self._barcode_text = ctk.CTkTextbox(self, height=200)
-        self._barcode_text.grid(row=2, column=0, padx=20, sticky="ew")
+        # 2. Barcode text area (~8 lines ≈ 160 px)
+        self._barcode_text = ctk.CTkTextbox(self, height=160)
+        self._barcode_text.grid(row=1, column=0, padx=20, pady=(4, 0), sticky="ew")
+        # Insert placeholder hint (light grey look via tag not available in CTkTextbox,
+        # so we use a simple placeholder string the user clears on first edit)
+        _placeholder = "1234567890123\n9876543210987\n..."
+        self._barcode_text.insert("1.0", _placeholder)
+        self._barcode_placeholder_active = True
+        self._barcode_text.bind("<FocusIn>", self._on_barcode_focus_in)
+        self._barcode_text.bind("<FocusOut>", self._on_barcode_focus_out)
 
-        # Output folder row
+        # 3. Output folder row
         folder_frame = ctk.CTkFrame(self, fg_color="transparent")
-        folder_frame.grid(row=3, column=0, padx=20, pady=(10, 0), sticky="ew")
-        folder_frame.grid_columnconfigure(0, weight=1)
+        folder_frame.grid(row=2, column=0, padx=20, pady=(10, 0), sticky="ew")
+        folder_frame.grid_columnconfigure(1, weight=1)
 
-        self._folder_var = ctk.StringVar(value="No folder selected")
-        ctk.CTkLabel(folder_frame, textvariable=self._folder_var, anchor="w").grid(
-            row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkLabel(folder_frame, text="Output folder:").grid(
+            row=0, column=0, padx=(0, 8), sticky="w")
+
+        self._folder_entry = ctk.CTkEntry(
+            folder_frame, placeholder_text="No folder selected", state="readonly")
+        self._folder_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+
         ctk.CTkButton(
-            folder_frame, text="Browse…", width=100,
+            folder_frame, text="Browse", width=80,
             command=self._browse_folder,
-        ).grid(row=0, column=1)
+        ).grid(row=0, column=2)
 
-        # Progress bar
-        self._progress = ctk.CTkProgressBar(self)
-        self._progress.grid(row=4, column=0, padx=20, pady=(10, 0), sticky="ew")
-        self._progress.set(0)
-
-        # Download button
+        # 4. Download Images button (full width)
         self._download_btn = ctk.CTkButton(
             self, text="Download Images",
             command=self._start_download,
         )
-        self._download_btn.grid(row=5, column=0, pady=(10, 0), padx=20, sticky="ew")
+        self._download_btn.grid(row=3, column=0, pady=(10, 0), padx=20, sticky="ew")
 
-        # Log area
+        # 5. Progress bar
+        self._progress = ctk.CTkProgressBar(self)
+        self._progress.grid(row=4, column=0, padx=20, pady=(8, 0), sticky="ew")
+        self._progress.set(0)
+
+        # 6. Log text area (~10 lines ≈ 200 px, read-only)
         ctk.CTkLabel(self, text="Log:").grid(
-            row=6, column=0, padx=20, pady=(10, 0), sticky="w")
-        self._log_box = ctk.CTkTextbox(self, height=160, state="disabled")
-        self._log_box.grid(row=7, column=0, padx=20, sticky="ew")
+            row=5, column=0, padx=20, pady=(10, 0), sticky="w")
+        self._log_box = ctk.CTkTextbox(self, height=200, state="disabled")
+        self._log_box.grid(row=6, column=0, padx=20, pady=(4, 0), sticky="ew")
 
-        # Open folder button (disabled until at least one image saved)
+        # 7. Open Folder button (disabled at startup)
         self._open_btn = ctk.CTkButton(
             self, text="Open Folder",
             command=self._open_folder, state="disabled",
         )
-        self._open_btn.grid(row=8, column=0, pady=(8, 16), padx=20, sticky="ew")
+        self._open_btn.grid(row=7, column=0, pady=(8, 16), padx=20, sticky="ew")
 
     # ------------------------------------------------------------------ #
-    #  Credential validation                                               #
+    #  Placeholder behaviour for barcode text area                        #
     # ------------------------------------------------------------------ #
 
-    def _validate_credentials(self) -> None:
-        try:
-            load_credentials(env_path=ENV_PATH)
-        except (ValueError, OSError) as exc:
-            self._log(f"[ERROR] {exc}")
-            self._log("[INFO] Create a .env file next to app.py with GOOGLE_API_KEY and GOOGLE_CX_ID.")
-            self._download_btn.configure(state="disabled")
+    def _on_barcode_focus_in(self, _event=None) -> None:
+        if self._barcode_placeholder_active:
+            self._barcode_text.delete("1.0", "end")
+            self._barcode_placeholder_active = False
+
+    def _on_barcode_focus_out(self, _event=None) -> None:
+        if not self._barcode_text.get("1.0", "end").strip():
+            self._barcode_text.insert("1.0", "1234567890123\n9876543210987\n...")
+            self._barcode_placeholder_active = True
 
     # ------------------------------------------------------------------ #
     #  Folder browsing                                                     #
@@ -111,7 +122,10 @@ class App(ctk.CTk):
         folder = filedialog.askdirectory(title="Select output folder")
         if folder:
             self._output_dir = folder
-            self._folder_var.set(folder)
+            self._folder_entry.configure(state="normal")
+            self._folder_entry.delete(0, "end")
+            self._folder_entry.insert(0, folder)
+            self._folder_entry.configure(state="readonly")
 
     # ------------------------------------------------------------------ #
     #  Download                                                            #
@@ -121,30 +135,37 @@ class App(ctk.CTk):
         if self._running:
             return
 
-        barcodes_raw = self._barcode_text.get("1.0", "end").strip()
-        if not barcodes_raw:
-            self._log("[WARN] No barcodes entered.")
+        # Read barcodes (ignore placeholder)
+        raw_text = "" if self._barcode_placeholder_active else self._barcode_text.get("1.0", "end").strip()
+        barcodes = [b.strip() for b in raw_text.splitlines() if b.strip()]
+
+        # Validate inputs
+        if not barcodes:
+            messagebox.showerror(
+                "Validation Error",
+                "Please enter at least one barcode.",
+            )
             return
 
         if not self._output_dir:
-            self._log("[WARN] Please select an output folder first.")
+            messagebox.showerror(
+                "Validation Error",
+                "Please select an output folder.",
+            )
             return
 
-        barcodes = [b.strip() for b in barcodes_raw.splitlines() if b.strip()]
-        if not barcodes:
-            self._log("[WARN] No valid barcodes found.")
-            return
-
+        # Load credentials — show error and stop if invalid
         try:
             api_key, cx_id = load_credentials(env_path=ENV_PATH)
         except ValueError as exc:
-            self._log(f"[ERROR] Credentials error: {exc}")
+            messagebox.showerror("Credentials Error", str(exc))
             return
 
+        # Prepare UI for batch run
         self._running = True
         self._download_btn.configure(state="disabled")
         self._progress.set(0)
-        self._log(f"[INFO] Starting batch of {len(barcodes)} barcode(s)…")
+        self._clear_log()
 
         thread = threading.Thread(
             target=self._run_batch_thread,
@@ -168,13 +189,8 @@ class App(ctk.CTk):
 
     def _on_result(self, result: BarcodeResult, idx: int, total: int) -> None:
         self._progress.set(idx / total)
-        status_prefix = {
-            "saved": "[INFO]",
-            "skipped": "[INFO]",
-            "no_image": "[WARN]",
-            "error": "[ERROR]",
-        }.get(result.status, "[INFO]")
-        self._log(f"{status_prefix} {result.barcode} → {result.message}")
+        prefix = _STATUS_PREFIX.get(result.status, "[INFO]")
+        self._log(f"{prefix} {result.barcode} — {result.message}")
         if result.status == "saved":
             self._open_btn.configure(state="normal")
 
@@ -190,17 +206,12 @@ class App(ctk.CTk):
 
     def _open_folder(self) -> None:
         if self._output_dir and os.path.isdir(self._output_dir):
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer", self._output_dir])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", self._output_dir])
-            else:
-                subprocess.Popen(["xdg-open", self._output_dir])
+            os.startfile(self._output_dir)
         else:
-            self._log("[WARN] Output folder no longer exists.")
+            messagebox.showwarning("Open Folder", "Output folder no longer exists.")
 
     # ------------------------------------------------------------------ #
-    #  Log helper                                                          #
+    #  Log helpers                                                         #
     # ------------------------------------------------------------------ #
 
     def _log(self, message: str) -> None:
@@ -209,11 +220,12 @@ class App(ctk.CTk):
         self._log_box.see("end")
         self._log_box.configure(state="disabled")
 
-
-def main() -> None:
-    app = App()
-    app.mainloop()
+    def _clear_log(self) -> None:
+        self._log_box.configure(state="normal")
+        self._log_box.delete("1.0", "end")
+        self._log_box.configure(state="disabled")
 
 
 if __name__ == "__main__":
-    main()
+    app = App()
+    app.mainloop()
