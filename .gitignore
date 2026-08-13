@@ -7,3 +7,6 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+Readme.txt
+build_err.txt
+build_log.txt

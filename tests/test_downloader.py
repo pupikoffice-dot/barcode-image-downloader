@@ -4,35 +4,48 @@ from unittest.mock import patch, MagicMock
 import requests
 
 
-def test_load_credentials_returns_keys(tmp_path):
-    env_file = tmp_path / ".env"
-    env_file.write_text("GOOGLE_API_KEY=mykey\nGOOGLE_CX_ID=mycx\n")
+def test_search_image_urls_returns_up_to_max_results():
     import downloader
-    api_key, cx_id = downloader.load_credentials(env_path=str(env_file))
-    assert api_key == "mykey"
-    assert cx_id == "mycx"
+    with patch("downloader._search_upcitemdb", return_value=["u1", "u2", "u3"]), \
+         patch("downloader._search_ociostock", return_value=[]), \
+         patch("downloader._search_duckduckgo_images", return_value=[]), \
+         patch("downloader._search_ebay_images", return_value=[]), \
+         patch("downloader._search_bing_images", return_value=[]):
+        result = downloader.search_image_urls("1234567890", max_results=2)
+    assert result == ["u1", "u2"]
 
 
-def test_load_credentials_missing_file(tmp_path):
+def test_search_image_urls_deduplicates_across_sources():
     import downloader
-    with pytest.raises(ValueError, match="missing"):
-        downloader.load_credentials(env_path=str(tmp_path / "nonexistent.env"))
+    with patch("downloader._search_upcitemdb", return_value=["u1"]), \
+         patch("downloader._search_ociostock", return_value=["u1", "u2"]), \
+         patch("downloader._search_duckduckgo_images", return_value=["u3"]), \
+         patch("downloader._search_ebay_images", return_value=[]), \
+         patch("downloader._search_bing_images", return_value=[]):
+        result = downloader.search_image_urls("1234567890", max_results=4)
+    assert result == ["u1", "u2", "u3"]
 
 
-def test_load_credentials_empty_key(tmp_path):
-    env_file = tmp_path / ".env"
-    env_file.write_text("GOOGLE_API_KEY=\nGOOGLE_CX_ID=mycx\n")
+def test_search_image_urls_returns_empty_when_all_sources_fail():
     import downloader
-    with pytest.raises(ValueError, match="GOOGLE_API_KEY"):
-        downloader.load_credentials(env_path=str(env_file))
+    with patch("downloader._search_upcitemdb", return_value=[]), \
+         patch("downloader._search_ociostock", return_value=[]), \
+         patch("downloader._search_duckduckgo_images", return_value=[]), \
+         patch("downloader._search_ebay_images", return_value=[]), \
+         patch("downloader._search_bing_images", return_value=[]):
+        result = downloader.search_image_urls("0000000000")
+    assert result == []
 
 
-def test_load_credentials_empty_cx(tmp_path):
-    env_file = tmp_path / ".env"
-    env_file.write_text("GOOGLE_API_KEY=mykey\nGOOGLE_CX_ID=\n")
+def test_search_image_urls_falls_back_to_next_source_when_first_empty():
     import downloader
-    with pytest.raises(ValueError, match="GOOGLE_CX_ID"):
-        downloader.load_credentials(env_path=str(env_file))
+    with patch("downloader._search_upcitemdb", return_value=[]), \
+         patch("downloader._search_ociostock", return_value=[]), \
+         patch("downloader._search_duckduckgo_images", return_value=["ddg1", "ddg2"]), \
+         patch("downloader._search_ebay_images", return_value=[]), \
+         patch("downloader._search_bing_images", return_value=[]):
+        result = downloader.search_image_urls("9876543210", max_results=2)
+    assert result == ["ddg1", "ddg2"]
 
 
 def test_sanitize_strips_whitespace():
@@ -65,45 +78,59 @@ def test_sanitize_dotdot_barcode_guarded():
     assert downloader.sanitize_barcode("..") == "_.."
 
 
-def test_search_image_url_returns_link():
+def test_search_upcitemdb_returns_images_from_api():
     import downloader
-    mock_service = MagicMock()
-    mock_service.cse().list().execute.return_value = {
-        "items": [{"link": "https://example.com/image.jpg"}]
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "items": [{"images": ["https://img.example.com/a.jpg", "https://img.example.com/b.jpg"]}]
     }
-    with patch("downloader.build", return_value=mock_service):
-        url = downloader.search_image_url("1234567890", "fakekey", "fakecx")
-    assert url == "https://example.com/image.jpg"
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_upcitemdb("1234567890")
+    assert result == ["https://img.example.com/a.jpg", "https://img.example.com/b.jpg"]
 
 
-def test_search_image_url_returns_none_when_no_items():
+def test_search_upcitemdb_returns_empty_on_non_200():
     import downloader
-    mock_service = MagicMock()
-    mock_service.cse().list().execute.return_value = {"items": []}
-    with patch("downloader.build", return_value=mock_service):
-        url = downloader.search_image_url("1234567890", "fakekey", "fakecx")
-    assert url is None
+    mock_resp = MagicMock()
+    mock_resp.status_code = 404
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_upcitemdb("1234567890")
+    assert result == []
 
 
-def test_search_image_url_returns_none_when_missing_items_key():
+def test_search_upcitemdb_returns_empty_on_exception():
     import downloader
-    mock_service = MagicMock()
-    mock_service.cse().list().execute.return_value = {}
-    with patch("downloader.build", return_value=mock_service):
-        url = downloader.search_image_url("1234567890", "fakekey", "fakecx")
-    assert url is None
+    with patch("downloader.requests.get", side_effect=Exception("network error")):
+        result = downloader._search_upcitemdb("1234567890")
+    assert result == []
 
 
-def test_search_image_url_raises_http_error():
+def test_search_open_food_facts_returns_images_for_known_product():
     import downloader
-    from googleapiclient.errors import HttpError
-    import httplib2
-    mock_service = MagicMock()
-    mock_resp = httplib2.Response({"status": "403"})
-    mock_service.cse().list().execute.side_effect = HttpError(mock_resp, b"forbidden")
-    with patch("downloader.build", return_value=mock_service):
-        with pytest.raises(HttpError):
-            downloader.search_image_url("1234567890", "fakekey", "fakecx")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "status": 1,
+        "product": {
+            "image_front_url": "https://images.openfoodfacts.org/front.jpg",
+            "image_url": "https://images.openfoodfacts.org/img.jpg",
+        }
+    }
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_open_food_facts("3017620422003")
+    assert "https://images.openfoodfacts.org/front.jpg" in result
+    assert "https://images.openfoodfacts.org/img.jpg" in result
+
+
+def test_search_open_food_facts_returns_empty_when_product_not_found():
+    import downloader
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"status": 0, "product": {}}
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_open_food_facts("0000000000000")
+    assert result == []
 
 
 def test_download_image_bytes_returns_content():
@@ -235,60 +262,117 @@ def test_save_as_jpg_converts_la_mode(tmp_path):
     assert loaded.mode == "RGB"
 
 
-def test_process_barcode_returns_saved_on_success(tmp_path):
+def test_search_bing_images_extracts_murl_urls():
     import downloader
-    with patch("downloader.search_image_url", return_value="https://img.example.com/a.jpg"), \
-         patch("downloader.download_image_bytes", return_value=b"bytes"), \
-         patch("downloader.save_as_jpg") as mock_save:
-        result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
-    assert result.status == "saved"
-    assert "1234567890.jpg" in result.message
-    mock_save.assert_called_once()
+    html = '"murl":"https://example.com/img1.jpg","murl":"https://example.com/img2.jpg"'
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = html
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_bing_images("test barcode", count=4)
+    assert "https://example.com/img1.jpg" in result
+    assert "https://example.com/img2.jpg" in result
 
 
-def test_process_barcode_skips_existing_file(tmp_path):
+def test_search_bing_images_returns_empty_on_non_200():
     import downloader
-    (tmp_path / "1234567890.jpg").write_bytes(b"existing")
-    result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
-    assert result.status == "skipped"
+    mock_resp = MagicMock()
+    mock_resp.status_code = 503
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_bing_images("test barcode")
+    assert result == []
 
 
-def test_process_barcode_returns_no_image_when_url_none(tmp_path):
+def test_search_bing_images_respects_count_limit():
     import downloader
-    with patch("downloader.search_image_url", return_value=None):
-        result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
-    assert result.status == "no_image"
+    urls = [f'"murl":"https://example.com/img{i}.jpg"' for i in range(10)]
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = ",".join(urls)
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_bing_images("test", count=3)
+    assert len(result) <= 3
 
 
-def test_process_barcode_returns_error_on_search_exception(tmp_path):
+def test_search_ebay_images_returns_empty_on_non_200():
     import downloader
-    with patch("downloader.search_image_url", side_effect=Exception("API down")):
-        result = downloader.process_barcode("1234567890", str(tmp_path), "key", "cx")
-    assert result.status == "error"
-    assert "API down" in result.message
+    mock_resp = MagicMock()
+    mock_resp.status_code = 429
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_ebay_images("1234567890")
+    assert result == []
 
 
-def test_process_barcode_returns_error_on_empty_after_sanitize(tmp_path):
+def test_search_ebay_images_extracts_ebayimg_urls():
     import downloader
-    result = downloader.process_barcode("   ", str(tmp_path), "key", "cx")
-    assert result.status == "error"
-    assert "empty" in result.message.lower()
+    html = (
+        'src="https://i.ebayimg.com/images/g/abc/s-l500.jpg" '
+        'src="https://i.ebayimg.com/images/g/def/s-l500.jpg"'
+    )
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = html
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader._search_ebay_images("1234567890", count=4)
+    assert "https://i.ebayimg.com/images/g/abc/s-l500.jpg" in result
+    assert "https://i.ebayimg.com/images/g/def/s-l500.jpg" in result
 
 
-def test_run_batch_calls_progress_callback(tmp_path):
+def test_download_preview_returns_resized_thumbnail():
     import downloader
-    with patch("downloader.process_barcode", return_value=downloader.BarcodeResult("123", "saved", "ok")):
-        calls = []
-        downloader.run_batch(["123", "456"], str(tmp_path), "key", "cx",
-                             progress_callback=lambda r, i, t: calls.append((i, t)))
-    assert calls == [(1, 2), (2, 2)]
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (800, 600), (0, 128, 255)).save(buf, format="JPEG")
+    mock_resp = MagicMock()
+    mock_resp.content = buf.getvalue()
+    mock_resp.raise_for_status.return_value = None
+    with patch("downloader.requests.get", return_value=mock_resp):
+        result = downloader.download_preview("https://example.com/img.jpg", max_size=220)
+    assert result is not None
+    assert result.size[0] <= 220
+    assert result.size[1] <= 220
 
 
-def test_run_batch_returns_all_results(tmp_path):
+def test_download_preview_returns_none_on_exception():
     import downloader
-    r1 = downloader.BarcodeResult("a", "saved", "ok")
-    r2 = downloader.BarcodeResult("b", "no_image", "none")
-    r3 = downloader.BarcodeResult("c", "error", "fail")
-    with patch("downloader.process_barcode", side_effect=[r1, r2, r3]):
-        results = downloader.run_batch(["a", "b", "c"], str(tmp_path), "key", "cx")
-    assert results == [r1, r2, r3]
+    with patch("downloader.requests.get", side_effect=Exception("timeout")):
+        result = downloader.download_preview("https://example.com/img.jpg")
+    assert result is None
+
+
+def test_format_bytes_scales_units():
+    import downloader
+    assert downloader.format_bytes(512) == "512 B"
+    assert downloader.format_bytes(2048) == "2 KB"
+    assert downloader.format_bytes(3 * 1024 * 1024) == "3.0 MB"
+
+
+def test_download_preview_info_reports_original_size():
+    import downloader
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (800, 600), (0, 128, 255)).save(buf, format="JPEG")
+    raw = buf.getvalue()
+    mock_resp = MagicMock()
+    mock_resp.content = raw
+    mock_resp.raise_for_status.return_value = None
+    with patch("downloader.requests.get", return_value=mock_resp):
+        info = downloader.download_preview_info("https://example.com/img.jpg", max_size=220)
+    assert info.image is not None
+    assert info.image.size[0] <= 220
+    # Metadata describes the ORIGINAL image, not the thumbnail
+    assert info.width == 800
+    assert info.height == 600
+    assert info.byte_size == len(raw)
+    assert "800×600" in info.size_label
+
+
+def test_download_preview_info_blank_on_failure():
+    import downloader
+    with patch("downloader.requests.get", side_effect=Exception("timeout")):
+        info = downloader.download_preview_info("https://example.com/img.jpg")
+    assert info.image is None
+    assert info.byte_size == 0
+    assert info.size_label == ""
