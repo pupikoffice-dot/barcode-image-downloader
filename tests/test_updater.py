@@ -92,6 +92,30 @@ def test_check_for_update_returns_none_when_exe_asset_missing():
         assert updater.check_for_update("1.0.0") is None
 
 
+def test_check_for_update_accepts_github_dotted_exe_name():
+    import updater
+
+    payload = {
+        "tag_name": "v1.1.0",
+        "assets": [
+            {
+                "name": "Barcode.Image.Downloader.exe",
+                "browser_download_url": "https://example.com/app.exe",
+            }
+        ],
+    }
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = payload
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("updater.requests.get", return_value=mock_resp):
+        info = updater.check_for_update("1.0.0")
+
+    assert info is not None
+    assert info.download_url == "https://example.com/app.exe"
+
+
 def test_download_update_writes_bytes(tmp_path):
     import updater
 

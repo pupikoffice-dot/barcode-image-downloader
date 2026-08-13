@@ -43,6 +43,19 @@ def _strip_v(tag: str) -> str:
     return tag.strip().lstrip("vV")
 
 
+def _pick_exe_asset(assets: list) -> dict | None:
+    """GitHub replaces spaces in upload names with dots, so match both forms."""
+    dotted = ASSET_NAME.replace(" ", ".")
+    fallback = None
+    for asset in assets or []:
+        name = asset.get("name") or ""
+        if name in (ASSET_NAME, dotted):
+            return asset
+        if fallback is None and name.lower().endswith(".exe"):
+            fallback = asset
+    return fallback
+
+
 def check_for_update(current_version: str = APP_VERSION) -> UpdateInfo | None:
     """Return update info if GitHub has a newer .exe; otherwise None.
 
@@ -61,12 +74,17 @@ def check_for_update(current_version: str = APP_VERSION) -> UpdateInfo | None:
     if not latest or not is_newer(latest, current_version):
         return None
 
-    for asset in data.get("assets") or []:
-        if asset.get("name") == ASSET_NAME:
-            url = asset.get("browser_download_url") or ""
-            if url:
-                return UpdateInfo(version=latest, download_url=url, filename=ASSET_NAME)
-    return None
+    asset = _pick_exe_asset(data.get("assets") or [])
+    if not asset:
+        return None
+    url = asset.get("browser_download_url") or ""
+    if not url:
+        return None
+    return UpdateInfo(
+        version=latest,
+        download_url=url,
+        filename=asset.get("name") or ASSET_NAME,
+    )
 
 
 def is_frozen() -> bool:
