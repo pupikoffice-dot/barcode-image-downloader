@@ -376,3 +376,69 @@ def test_download_preview_info_blank_on_failure():
     assert info.image is None
     assert info.byte_size == 0
     assert info.size_label == ""
+
+
+def test_download_first_image_saves_first_url(tmp_path):
+    import downloader
+    from PIL import Image
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10), "red").save(buf, format="JPEG")
+    jpeg = buf.getvalue()
+    out = tmp_path / "4005555042822.jpg"
+
+    with patch("downloader.search_image_urls", return_value=["https://example.com/a.jpg", "https://example.com/b.jpg"]), \
+         patch("downloader.download_image_bytes", return_value=jpeg) as mock_dl:
+        result = downloader.download_first_image("4005555042822", str(out))
+
+    assert result.status == "saved"
+    assert out.is_file()
+    mock_dl.assert_called_once_with("https://example.com/a.jpg")
+
+
+def test_download_first_image_skips_when_file_exists(tmp_path):
+    import downloader
+    out = tmp_path / "already.jpg"
+    out.write_bytes(b"existing")
+
+    with patch("downloader.search_image_urls") as mock_search:
+        result = downloader.download_first_image("123", str(out))
+
+    assert result.status == "skipped"
+    mock_search.assert_not_called()
+    assert out.read_bytes() == b"existing"
+
+
+def test_download_first_image_no_image_when_search_empty(tmp_path):
+    import downloader
+    out = tmp_path / "missing.jpg"
+
+    with patch("downloader.search_image_urls", return_value=[]):
+        result = downloader.download_first_image("000", str(out))
+
+    assert result.status == "no_image"
+    assert not out.exists()
+
+
+def test_download_first_image_tries_next_url_when_first_fails(tmp_path):
+    import downloader
+    from PIL import Image
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(buf, format="JPEG")
+    jpeg = buf.getvalue()
+    out = tmp_path / "next.jpg"
+
+    def fake_download(url):
+        if url.endswith("a.jpg"):
+            raise ValueError("bad first")
+        return jpeg
+
+    with patch("downloader.search_image_urls", return_value=["https://example.com/a.jpg", "https://example.com/b.jpg"]), \
+         patch("downloader.download_image_bytes", side_effect=fake_download):
+        result = downloader.download_first_image("123", str(out))
+
+    assert result.status == "saved"
+    assert out.is_file()

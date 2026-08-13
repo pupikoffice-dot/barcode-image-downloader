@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import warnings
 from dataclasses import dataclass
@@ -401,6 +402,31 @@ def save_as_jpg(image_bytes: bytes, output_path: str) -> None:
     if image.mode != "RGB":
         image = image.convert("RGB")
     image.save(output_path, format="JPEG", quality=90)
+
+
+def download_first_image(barcode: str, output_path: str) -> BarcodeResult:
+    """Search for the barcode and save the first image that actually downloads.
+
+    Skips if `output_path` already exists. If the first URL fails, later search
+    results are tried so a single bad CDN does not fail the barcode.
+    """
+    if os.path.exists(output_path):
+        return BarcodeResult(barcode, "skipped", "file already exists")
+
+    urls = search_image_urls(barcode, max_results=4)
+    if not urls:
+        return BarcodeResult(barcode, "no_image", "no images found")
+
+    last_error = "no images found"
+    filename = os.path.basename(output_path)
+    for url in urls:
+        try:
+            raw = download_image_bytes(url)
+            save_as_jpg(raw, output_path)
+            return BarcodeResult(barcode, "saved", filename)
+        except Exception as exc:
+            last_error = str(exc)
+    return BarcodeResult(barcode, "error", last_error)
 
 
 @dataclass

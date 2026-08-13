@@ -13,6 +13,7 @@ from PIL import Image, ImageTk  # noqa: F401  (kept so PyInstaller bundles PIL's
 from downloader import (
     BarcodeResult,
     PreviewInfo,
+    download_first_image,
     download_image_bytes,
     download_preview_info,
     sanitize_barcode,
@@ -22,6 +23,7 @@ from downloader import (
 from updater import (
     APP_VERSION,
     UpdateInfo,
+    check_update_status,
     apply_update,
     check_for_update,
     download_update,
@@ -47,6 +49,7 @@ class App(ctk.CTk):
         self._output_dir: str = ""
         self._running = False
         self._cancelled = False
+        self._auto_first = False
         self._barcodes: list[str] = []
         self._current_idx: int = 0
         self._image_urls: list[str] = []
@@ -98,10 +101,20 @@ class App(ctk.CTk):
     def _build_content(self, parent: ctk.CTkFrame) -> None:
         parent.grid_columnconfigure(0, weight=1)
 
-        # 1. Barcode input
+        # 1. Header: barcode label left, Check for updates right
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.grid(row=0, column=0, padx=20, pady=(12, 0), sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+
         ctk.CTkLabel(
-            parent, text="Paste barcodes (one per line):",
-        ).grid(row=0, column=0, padx=20, pady=(12, 0), sticky="w")
+            header, text="Paste barcodes (one per line):",
+        ).grid(row=0, column=0, sticky="w")
+
+        self._update_btn = ctk.CTkButton(
+            header, text="Check for updates", width=150,
+            command=self._on_check_updates,
+        )
+        self._update_btn.grid(row=0, column=1, sticky="e")
 
         self._barcode_text = ctk.CTkTextbox(parent, height=100)
         self._barcode_text.grid(row=1, column=0, padx=20, pady=(4, 0), sticky="ew")
@@ -173,7 +186,7 @@ class App(ctk.CTk):
         self._initials_entry.grid_remove()
         self._initials_hint.grid_remove()
 
-        # 5. Download Images + Cancel All row
+        # 5. Download Images + Download all + Cancel All row
         action_frame = ctk.CTkFrame(parent, fg_color="transparent")
         action_frame.grid(row=5, column=0, pady=(8, 0), padx=20, sticky="ew")
         action_frame.grid_columnconfigure(0, weight=1)
@@ -184,12 +197,19 @@ class App(ctk.CTk):
         )
         self._download_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
 
+        self._download_all_btn = ctk.CTkButton(
+            action_frame, text="Download all", width=130,
+            fg_color="#1a6334", hover_color="#14502a",
+            command=self._start_download_all,
+        )
+        self._download_all_btn.grid(row=0, column=1, padx=(0, 8))
+
         self._cancel_btn = ctk.CTkButton(
             action_frame, text="Cancel All", width=130,
             fg_color="#a33232", hover_color="#822828",
             command=self._on_cancel_all, state="disabled",
         )
-        self._cancel_btn.grid(row=0, column=1)
+        self._cancel_btn.grid(row=0, column=2)
 
         # 6. Progress bar + counter
         prog_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -346,6 +366,12 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------ #
 
     def _start_download(self) -> None:
+        self._begin_batch(auto_first=False)
+
+    def _start_download_all(self) -> None:
+        self._begin_batch(auto_first=True)
+
+    def _begin_batch(self, auto_first: bool) -> None:
         if self._running:
             return
 
@@ -361,10 +387,12 @@ class App(ctk.CTk):
 
         self._running = True
         self._cancelled = False
+        self._auto_first = auto_first
         self._num_images = self._get_qty()
         self._barcodes = barcodes
         self._current_idx = 0
         self._download_btn.configure(state="disabled")
+        self._download_all_btn.configure(state="disabled")
         self._cancel_btn.configure(state="normal")
         self._barcode_text.configure(state="disabled")
         self._qty_entry.configure(state="disabled")
@@ -402,9 +430,43 @@ class App(ctk.CTk):
         self._clear_previews()
         self._set_buttons_enabled(False)
 
+        if self._auto_first:
+            thread = threading.Thread(
+                target=self._auto_first_thread, args=(barcode,), daemon=True)
+            thread.start()
+            return
+
         thread = threading.Thread(
             target=self._search_thread, args=(barcode,), daemon=True)
         thread.start()
+
+    def _auto_first_thread(self, barcode: str) -> None:
+        if self._cancelled:
+            return
+        base = self._get_filename_base(barcode)
+        out_path = os.path.join(self._output_dir, f"{base}.jpg")
+        try:
+            result = download_first_image(barcode, out_path)
+        except Exception as exc:
+            result = BarcodeResult(barcode, "error", str(exc))
+        self.after(0, self._on_auto_first_done, result)
+
+    def _on_auto_first_done(self, result: BarcodeResult) -> None:
+        if self._cancelled:
+            return
+        if result.status == "saved":
+            self._log(f"[SAVED] {result.barcode} — {result.message}")
+            self._open_btn.configure(state="normal")
+            self._status_label.configure(text="Saved first image", text_color="#2d8a4e")
+        elif result.status == "skipped":
+            self._log(f"[SKIP] {result.barcode} — {result.message}")
+        elif result.status == "no_image":
+            self._log(f"[WARN] {result.barcode} — {result.message}")
+            self._status_label.configure(text="No images found", text_color="orange")
+        else:
+            self._log(f"[ERROR] {result.barcode} — {result.message}")
+            self._status_label.configure(text="Error saving", text_color="red")
+        self._advance()
 
     def _search_thread(self, barcode: str) -> None:
         try:
@@ -625,6 +687,7 @@ class App(ctk.CTk):
         self._current_idx = 0
         self._image_urls = []
         self._download_btn.configure(state="normal")
+        self._download_all_btn.configure(state="normal")
         self._cancel_btn.configure(state="disabled")
         self._barcode_text.configure(state="normal")
         self._qty_entry.configure(state="normal")
@@ -705,6 +768,47 @@ class App(ctk.CTk):
 
     def _start_update_check(self) -> None:
         threading.Thread(target=self._update_check_thread, daemon=True).start()
+
+    def _on_check_updates(self) -> None:
+        if self._running:
+            return
+        self._update_btn.configure(state="disabled", text="Checking…")
+        threading.Thread(target=self._manual_update_check_thread, daemon=True).start()
+
+    def _manual_update_check_thread(self) -> None:
+        try:
+            result = check_update_status(APP_VERSION)
+        except Exception as exc:
+            self.after(0, self._on_manual_update_result, "error", None, str(exc))
+            return
+        self.after(
+            0,
+            self._on_manual_update_result,
+            result.status,
+            result.info,
+            result.message,
+        )
+
+    def _on_manual_update_result(
+        self,
+        status: str,
+        info: UpdateInfo | None,
+        message: str,
+    ) -> None:
+        self._update_btn.configure(state="normal", text="Check for updates")
+        if status == "available" and info is not None:
+            self._prompt_update(info)
+        elif status == "current":
+            messagebox.showinfo(
+                "Check for updates",
+                f"You already have the latest version (v{APP_VERSION}).",
+            )
+        else:
+            detail = message or "Could not reach the update server."
+            messagebox.showwarning(
+                "Check for updates",
+                f"Could not check for updates.\n\n{detail}",
+            )
 
     def _update_check_thread(self) -> None:
         try:

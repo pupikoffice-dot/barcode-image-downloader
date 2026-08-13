@@ -5,10 +5,11 @@ import os
 import sys
 import tempfile
 from dataclasses import dataclass
+from typing import Literal
 
 import requests
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 GITHUB_REPO = "pupikoffice-dot/barcode-image-downloader"
 ASSET_NAME = "Barcode Image Downloader.exe"
 API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -43,6 +44,13 @@ def _strip_v(tag: str) -> str:
     return tag.strip().lstrip("vV")
 
 
+@dataclass(frozen=True)
+class UpdateCheckResult:
+    status: Literal["available", "current", "error"]
+    info: UpdateInfo | None = None
+    message: str = ""
+
+
 def _pick_exe_asset(assets: list) -> dict | None:
     """GitHub replaces spaces in upload names with dots, so match both forms."""
     dotted = ASSET_NAME.replace(" ", ".")
@@ -56,35 +64,46 @@ def _pick_exe_asset(assets: list) -> dict | None:
     return fallback
 
 
+def check_update_status(current_version: str = APP_VERSION) -> UpdateCheckResult:
+    """Check GitHub Releases: available, already current, or error."""
+    try:
+        resp = requests.get(API_URL, headers=_HEADERS, timeout=12)
+        if resp.status_code != 200:
+            return UpdateCheckResult("error", message=f"HTTP {resp.status_code}")
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        return UpdateCheckResult("error", message=str(exc))
+
+    tag = data.get("tag_name") or ""
+    latest = _strip_v(str(tag))
+    if not latest:
+        return UpdateCheckResult("error", message="No version tag on latest release")
+    if not is_newer(latest, current_version):
+        return UpdateCheckResult("current")
+
+    asset = _pick_exe_asset(data.get("assets") or [])
+    if not asset:
+        return UpdateCheckResult("error", message="No .exe on the latest release")
+    url = asset.get("browser_download_url") or ""
+    if not url:
+        return UpdateCheckResult("error", message="Release asset has no download URL")
+    info = UpdateInfo(
+        version=latest,
+        download_url=url,
+        filename=asset.get("name") or ASSET_NAME,
+    )
+    return UpdateCheckResult("available", info=info)
+
+
 def check_for_update(current_version: str = APP_VERSION) -> UpdateInfo | None:
     """Return update info if GitHub has a newer .exe; otherwise None.
 
     Network and API errors are treated as "no update" so a launch is never blocked.
     """
-    try:
-        resp = requests.get(API_URL, headers=_HEADERS, timeout=12)
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-    except (requests.RequestException, ValueError):
-        return None
-
-    tag = data.get("tag_name") or ""
-    latest = _strip_v(str(tag))
-    if not latest or not is_newer(latest, current_version):
-        return None
-
-    asset = _pick_exe_asset(data.get("assets") or [])
-    if not asset:
-        return None
-    url = asset.get("browser_download_url") or ""
-    if not url:
-        return None
-    return UpdateInfo(
-        version=latest,
-        download_url=url,
-        filename=asset.get("name") or ASSET_NAME,
-    )
+    result = check_update_status(current_version)
+    if result.status == "available":
+        return result.info
+    return None
 
 
 def is_frozen() -> bool:

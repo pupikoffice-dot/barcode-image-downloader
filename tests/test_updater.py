@@ -116,6 +116,62 @@ def test_check_for_update_accepts_github_dotted_exe_name():
     assert info.download_url == "https://example.com/app.exe"
 
 
+def test_check_update_status_available_when_newer():
+    import updater
+
+    payload = {
+        "tag_name": "v1.1.0",
+        "assets": [
+            {
+                "name": "Barcode Image Downloader.exe",
+                "browser_download_url": "https://example.com/app.exe",
+            }
+        ],
+    }
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = payload
+
+    with patch("updater.requests.get", return_value=mock_resp):
+        result = updater.check_update_status("1.0.0")
+
+    assert result.status == "available"
+    assert result.info is not None
+    assert result.info.version == "1.1.0"
+
+
+def test_check_update_status_current_when_same_version():
+    import updater
+
+    payload = {
+        "tag_name": "v1.0.0",
+        "assets": [
+            {
+                "name": "Barcode Image Downloader.exe",
+                "browser_download_url": "https://example.com/app.exe",
+            }
+        ],
+    }
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = payload
+
+    with patch("updater.requests.get", return_value=mock_resp):
+        result = updater.check_update_status("1.0.0")
+
+    assert result.status == "current"
+    assert result.info is None
+
+
+def test_check_update_status_error_on_network_failure():
+    import updater
+
+    with patch("updater.requests.get", side_effect=requests.RequestException("offline")):
+        result = updater.check_update_status("1.0.0")
+
+    assert result.status == "error"
+
+
 def test_download_update_writes_bytes(tmp_path):
     import updater
 
