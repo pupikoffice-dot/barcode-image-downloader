@@ -20,6 +20,7 @@ from downloader import (
     save_as_jpg,
     search_image_urls,
 )
+from ui_helpers import attach_tooltip, bind_layout_independent_clipboard
 from updater import (
     APP_VERSION,
     UpdateInfo,
@@ -56,6 +57,7 @@ class App(ctk.CTk):
 
         self._check_vars: list[ctk.BooleanVar] = [ctk.BooleanVar(value=False) for _ in range(_MAX_SLOTS)]
         self._naming_var = ctk.StringVar(value="barcode")
+        self._tooltips: list = []
 
         self._build_ui()
         self._fit_window()
@@ -115,6 +117,10 @@ class App(ctk.CTk):
             command=self._on_check_updates,
         )
         self._update_btn.grid(row=0, column=1, sticky="e")
+        self._tip(
+            self._update_btn,
+            "Check GitHub for a newer version. If one is available, you can update now or later.",
+        )
 
         self._barcode_text = ctk.CTkTextbox(parent, height=100)
         self._barcode_text.grid(row=1, column=0, padx=20, pady=(4, 0), sticky="ew")
@@ -122,6 +128,15 @@ class App(ctk.CTk):
         self._barcode_placeholder_active = True
         self._barcode_text.bind("<FocusIn>", self._on_barcode_focus_in)
         self._barcode_text.bind("<FocusOut>", self._on_barcode_focus_out)
+        # Ctrl+V/C/X/A by physical keycode so paste works on Hebrew and other layouts
+        bind_layout_independent_clipboard(
+            self._barcode_text,
+            on_before_paste=self._clear_barcode_placeholder,
+        )
+        self._tip(
+            self._barcode_text,
+            "Paste barcodes here, one per line. Copy/paste works in any keyboard language.",
+        )
 
         # 2. Output folder row
         folder_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -134,11 +149,17 @@ class App(ctk.CTk):
         self._folder_entry = ctk.CTkEntry(
             folder_frame, placeholder_text="No folder selected", state="readonly")
         self._folder_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self._tip(
+            self._folder_entry,
+            "Folder where saved JPEG images will be written. Use Browse to choose one.",
+        )
 
-        ctk.CTkButton(
+        self._browse_btn = ctk.CTkButton(
             folder_frame, text="Browse", width=80,
             command=self._browse_folder,
-        ).grid(row=0, column=2)
+        )
+        self._browse_btn.grid(row=0, column=2)
+        self._tip(self._browse_btn, "Choose the folder where downloaded images will be saved.")
 
         # 3. Qty images row
         qty_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -150,6 +171,10 @@ class App(ctk.CTk):
         self._qty_var = ctk.StringVar(value="4")
         self._qty_entry = ctk.CTkEntry(qty_frame, width=60, textvariable=self._qty_var)
         self._qty_entry.grid(row=0, column=1, sticky="w")
+        self._tip(
+            self._qty_entry,
+            "How many preview images to fetch per barcode when using Download Images (1–20).",
+        )
 
         ctk.CTkLabel(qty_frame, text="(number of preview images per barcode)",
                      text_color="gray").grid(row=0, column=2, padx=(10, 0), sticky="w")
@@ -161,19 +186,33 @@ class App(ctk.CTk):
         ctk.CTkLabel(naming_frame, text="File naming:").grid(
             row=0, column=0, padx=(0, 12), sticky="w")
 
-        ctk.CTkRadioButton(
+        self._naming_barcode_rb = ctk.CTkRadioButton(
             naming_frame, text="Barcode", variable=self._naming_var,
             value="barcode", command=self._on_naming_changed,
-        ).grid(row=0, column=1, padx=(0, 16), sticky="w")
+        )
+        self._naming_barcode_rb.grid(row=0, column=1, padx=(0, 16), sticky="w")
+        self._tip(
+            self._naming_barcode_rb,
+            "Save files as the full barcode, e.g. 4005555042822.jpg.",
+        )
 
-        ctk.CTkRadioButton(
+        self._naming_initials_rb = ctk.CTkRadioButton(
             naming_frame, text="Initials", variable=self._naming_var,
             value="initials", command=self._on_naming_changed,
-        ).grid(row=0, column=2, padx=(0, 8), sticky="w")
+        )
+        self._naming_initials_rb.grid(row=0, column=2, padx=(0, 8), sticky="w")
+        self._tip(
+            self._naming_initials_rb,
+            "Save files as initials plus digits 7–11 of the barcode, e.g. FNK-50428.jpg.",
+        )
 
         self._initials_entry = ctk.CTkEntry(
             naming_frame, width=80, placeholder_text="e.g. FNK")
         self._initials_entry.grid(row=0, column=3, padx=(0, 8), sticky="w")
+        self._tip(
+            self._initials_entry,
+            "Enter your initials (or short code) used as the filename prefix.",
+        )
 
         self._initials_hint = ctk.CTkLabel(
             naming_frame,
@@ -196,6 +235,10 @@ class App(ctk.CTk):
             command=self._start_download,
         )
         self._download_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self._tip(
+            self._download_btn,
+            "Search for each barcode and show preview images so you can choose which ones to save.",
+        )
 
         self._download_all_btn = ctk.CTkButton(
             action_frame, text="Download all", width=130,
@@ -203,6 +246,10 @@ class App(ctk.CTk):
             command=self._start_download_all,
         )
         self._download_all_btn.grid(row=0, column=1, padx=(0, 8))
+        self._tip(
+            self._download_all_btn,
+            "For each barcode, automatically save the first image found — no preview or selection.",
+        )
 
         self._cancel_btn = ctk.CTkButton(
             action_frame, text="Cancel All", width=130,
@@ -210,6 +257,10 @@ class App(ctk.CTk):
             command=self._on_cancel_all, state="disabled",
         )
         self._cancel_btn.grid(row=0, column=2)
+        self._tip(
+            self._cancel_btn,
+            "Stop the current batch. Images already saved stay on disk.",
+        )
 
         # 6. Progress bar + counter
         prog_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -262,18 +313,21 @@ class App(ctk.CTk):
             fg_color="#1a6334", hover_color="#14502a",
             command=self._on_save_all, state="disabled")
         self._btn_save_all.pack(pady=(0, 8))
+        self._tip(self._btn_save_all, "Save every preview image shown for this barcode.")
 
         self._btn_save = ctk.CTkButton(
             self._btn_panel, text="Save Selected", width=130,
             fg_color="#2d8a4e", hover_color="#236b3c",
             command=self._on_save_selected, state="disabled")
         self._btn_save.pack(pady=(0, 8))
+        self._tip(self._btn_save, "Save only the preview images you checked.")
 
         self._btn_skip = ctk.CTkButton(
             self._btn_panel, text="Skip", width=130,
             fg_color="#6b6b6b", hover_color="#555555",
             command=self._on_skip, state="disabled")
         self._btn_skip.pack()
+        self._tip(self._btn_skip, "Skip this barcode and move to the next one without saving.")
 
         # 8. Log row — log on left, Open Folder on right
         log_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -294,18 +348,26 @@ class App(ctk.CTk):
             command=self._open_folder, state="disabled",
         )
         self._open_btn.grid(row=0, column=1, sticky="s", pady=(0, 0))
+        self._tip(self._open_btn, "Open the output folder in File Explorer.")
+        self._tip(self._log_box, "Status log: saved, skipped, and error messages for the current batch.")
 
         # Bottom spacer
         ctk.CTkLabel(parent, text="").grid(row=9, column=0, pady=(0, 12))
+
+    def _tip(self, widget, text: str) -> None:
+        self._tooltips.append(attach_tooltip(widget, text))
 
     # ------------------------------------------------------------------ #
     #  Placeholder behaviour                                              #
     # ------------------------------------------------------------------ #
 
-    def _on_barcode_focus_in(self, _event=None) -> None:
+    def _clear_barcode_placeholder(self) -> None:
         if self._barcode_placeholder_active:
             self._barcode_text.delete("1.0", "end")
             self._barcode_placeholder_active = False
+
+    def _on_barcode_focus_in(self, _event=None) -> None:
+        self._clear_barcode_placeholder()
 
     def _on_barcode_focus_out(self, _event=None) -> None:
         if not self._barcode_text.get("1.0", "end").strip():

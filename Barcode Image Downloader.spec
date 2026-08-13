@@ -18,6 +18,7 @@ a = Analysis(
         'requests',
         'urllib3',
         'updater',
+        'ui_helpers',
     ],
     hookspath=[],
     hooksconfig={},

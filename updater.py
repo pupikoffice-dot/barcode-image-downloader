@@ -9,7 +9,7 @@ from typing import Literal
 
 import requests
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 GITHUB_REPO = "pupikoffice-dot/barcode-image-downloader"
 ASSET_NAME = "Barcode Image Downloader.exe"
 API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
