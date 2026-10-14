@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
+import queue
 import threading
 import tkinter as tk
 import webbrowser
+from concurrent.futures import Future, ThreadPoolExecutor
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -15,8 +17,10 @@ from downloader import (
     PreviewInfo,
     download_first_image,
     download_image_bytes,
-    download_preview_info,
+    download_previews,
+    is_safe_url,
     sanitize_barcode,
+    sanitize_filename_part,
     save_as_jpg,
     search_image_urls,
 )
@@ -25,11 +29,12 @@ from updater import (
     APP_VERSION,
     UpdateInfo,
     check_update_status,
-    apply_update,
     check_for_update,
+    cleanup_previous_update,
     download_update,
+    install_update,
     is_frozen,
-    launch_helper,
+    relaunch,
 )
 
 ctk.set_appearance_mode("dark")
@@ -39,6 +44,15 @@ _PLACEHOLDER = "1234567890123\n9876543210987\n..."
 _MAX_SLOTS = 20
 _THUMB_SIZE = 120
 _GRID_COLS = 4
+# Barcodes processed at once by Download all. Kept modest so the image
+# search sites do not start throttling us.
+_AUTO_WORKERS = 4
+
+
+def _fetch_candidates(barcode: str, count: int) -> tuple[list[str], list[PreviewInfo]]:
+    """Search + download previews for one barcode (runs on a worker thread)."""
+    urls = search_image_urls(barcode, max_results=count)
+    return urls, download_previews(urls, max_size=_THUMB_SIZE)
 
 
 class App(ctk.CTk):
@@ -54,6 +68,15 @@ class App(ctk.CTk):
         self._barcodes: list[str] = []
         self._current_idx: int = 0
         self._image_urls: list[str] = []
+        self._previews: list[PreviewInfo] = []
+        # Bumped on every batch start/cancel; late worker results from an
+        # older batch compare against it and are dropped.
+        self._batch_id = 0
+        self._prefetch: dict[int, Future] = {}
+        self._auto_done = 0
+        self._auto_futures: list[Future] = []
+        self._executor = ThreadPoolExecutor(max_workers=_AUTO_WORKERS, thread_name_prefix="bid-app")
+        self._ui_queue: queue.SimpleQueue = queue.SimpleQueue()
 
         self._check_vars: list[ctk.BooleanVar] = [ctk.BooleanVar(value=False) for _ in range(_MAX_SLOTS)]
         self._naming_var = ctk.StringVar(value="barcode")
@@ -61,6 +84,8 @@ class App(ctk.CTk):
 
         self._build_ui()
         self._fit_window()
+        cleanup_previous_update()
+        self._drain_ui_queue()
         self.after(800, self._start_update_check)
 
     # ------------------------------------------------------------------ #
@@ -389,15 +414,18 @@ class App(ctk.CTk):
     def _get_filename_base(self, barcode: str) -> str:
         """Return the filename stem (no extension) for a given barcode."""
         if self._naming_var.get() == "initials":
-            initials = self._initials_entry.get().strip()
-            if not initials:
-                initials = "IMG"
+            # Sanitized so typed text like "..\" cannot leave the output folder
+            initials = sanitize_filename_part(self._initials_entry.get()) or "IMG"
             # Extract characters at positions 7–11 (0-based index 6:11)
             digits = barcode[6:11] if len(barcode) > 6 else barcode
             # Strip leading zeros (e.g. 09926 → 9926)
             digits = digits.lstrip("0") or digits  # keep original if all zeros
-            return f"{initials}-{digits}"
+            return sanitize_filename_part(f"{initials}-{digits}") or "IMG"
         return sanitize_barcode(barcode)
+
+    def _output_path(self, barcode: str) -> str:
+        """Full .jpg path for a barcode. Reads Tk widgets — main thread only."""
+        return os.path.join(self._output_dir, f"{self._get_filename_base(barcode)}.jpg")
 
     # ------------------------------------------------------------------ #
     #  Folder browsing                                                     #
@@ -449,6 +477,8 @@ class App(ctk.CTk):
 
         self._running = True
         self._cancelled = False
+        self._batch_id += 1
+        self._prefetch = {}
         self._auto_first = auto_first
         self._num_images = self._get_qty()
         self._barcodes = barcodes
@@ -463,7 +493,132 @@ class App(ctk.CTk):
         self._progress_label.configure(text=f"0 / {len(barcodes)}")
         self._clear_log()
 
-        self._process_next_barcode()
+        if auto_first:
+            self._start_auto_batch()
+        else:
+            self._process_next_barcode()
+
+    # ------------------------------------------------------------------ #
+    #  Download all — several barcodes in parallel                         #
+    # ------------------------------------------------------------------ #
+
+    def _start_auto_batch(self) -> None:
+        """Plan every barcode on the UI thread, then download in parallel."""
+        batch_id = self._batch_id
+        self._auto_done = 0
+        self._auto_futures = []
+        self._clear_previews()
+        self._set_buttons_enabled(False)
+
+        claimed: set[str] = set()
+        immediate: list[BarcodeResult] = []
+        jobs: list[tuple[str, str]] = []
+        for barcode in self._barcodes:
+            if not sanitize_barcode(barcode):
+                immediate.append(BarcodeResult(barcode, "error", "empty after sanitization"))
+                continue
+            out_path = self._output_path(barcode)
+            key = os.path.normcase(out_path)
+            if key in claimed:
+                # Initials naming can map two barcodes to one filename.
+                immediate.append(BarcodeResult(
+                    barcode, "skipped",
+                    f"same filename as an earlier barcode ({os.path.basename(out_path)})"))
+                continue
+            claimed.add(key)
+            jobs.append((barcode, out_path))
+
+        if jobs:
+            self._barcode_label.configure(text="Download all")
+            self._status_label.configure(
+                text=f"Downloading — {min(_AUTO_WORKERS, len(jobs))} barcodes at a time…",
+                text_color="yellow")
+        for barcode, out_path in jobs:
+            fut = self._executor.submit(self._auto_worker, batch_id, barcode, out_path)
+            fut.add_done_callback(
+                lambda f, b=barcode: self._post(self._on_auto_future_done, batch_id, b, f))
+            self._auto_futures.append(fut)
+        # Reported after submitting, so the batch can only finish here when
+        # nothing was queued.
+        for result in immediate:
+            self._on_auto_result(batch_id, result)
+
+    def _auto_worker(self, batch_id: int, barcode: str, out_path: str) -> BarcodeResult | None:
+        if batch_id != self._batch_id or self._cancelled:
+            return None
+        return download_first_image(barcode, out_path)
+
+    def _on_auto_future_done(self, batch_id: int, barcode: str, fut: Future) -> None:
+        if fut.cancelled():
+            return
+        exc = fut.exception()
+        result = BarcodeResult(barcode, "error", str(exc)) if exc else fut.result()
+        if result is not None:
+            self._on_auto_result(batch_id, result)
+
+    def _on_auto_result(self, batch_id: int, result: BarcodeResult) -> None:
+        if batch_id != self._batch_id or self._cancelled or not self._running:
+            return
+        if result.status == "saved":
+            self._log(f"[SAVED] {result.barcode} — {result.message}")
+            self._open_btn.configure(state="normal")
+        elif result.status == "skipped":
+            self._log(f"[SKIP] {result.barcode} — {result.message}")
+        elif result.status == "no_image":
+            self._log(f"[WARN] {result.barcode} — {result.message}")
+        else:
+            self._log(f"[ERROR] {result.barcode} — {result.message}")
+
+        self._auto_done += 1
+        total = len(self._barcodes)
+        self._progress.set(self._auto_done / total)
+        self._progress_label.configure(text=f"{self._auto_done} / {total}")
+        if self._auto_done >= total:
+            self._on_batch_done()
+
+    # ------------------------------------------------------------------ #
+    #  Download Images — one barcode at a time with preview                #
+    # ------------------------------------------------------------------ #
+
+    def _post(self, fn, *args) -> None:
+        """Run fn(*args) on the Tk thread. Safe to call from any thread.
+
+        Worker threads never touch Tk directly (Tk is not thread-safe and
+        `after()` from a thread fails when the main loop is busy); they queue
+        the call and the UI thread drains the queue.
+        """
+        self._ui_queue.put((fn, args))
+
+    def _drain_ui_queue(self) -> None:
+        try:
+            while True:
+                fn, args = self._ui_queue.get_nowait()
+                try:
+                    fn(*args)
+                except Exception as exc:  # keep the pump alive whatever happens
+                    self._log(f"[ERROR] internal: {exc}")
+        except queue.Empty:
+            pass
+        self.after(30, self._drain_ui_queue)
+
+    def _is_pending(self, barcode: str) -> bool:
+        """True if this barcode still needs a preview (not invalid, not saved yet)."""
+        return bool(sanitize_barcode(barcode)) and not os.path.exists(self._output_path(barcode))
+
+    def _fetch_for(self, idx: int) -> Future:
+        fut = self._prefetch.pop(idx, None)
+        if fut is None:
+            fut = self._executor.submit(_fetch_candidates, self._barcodes[idx], self._num_images)
+        return fut
+
+    def _prefetch_next(self, after_idx: int) -> None:
+        """Start fetching the next barcode's previews while the user decides."""
+        for idx in range(after_idx + 1, len(self._barcodes)):
+            if self._is_pending(self._barcodes[idx]):
+                if idx not in self._prefetch:
+                    self._prefetch[idx] = self._executor.submit(
+                        _fetch_candidates, self._barcodes[idx], self._num_images)
+                return
 
     def _process_next_barcode(self) -> None:
         if self._cancelled:
@@ -472,17 +627,15 @@ class App(ctk.CTk):
             self._on_batch_done()
             return
 
-        barcode = self._barcodes[self._current_idx]
-        safe = sanitize_barcode(barcode)
+        idx = self._current_idx
+        barcode = self._barcodes[idx]
 
-        if not safe:
+        if not sanitize_barcode(barcode):
             self._log(f"[ERROR] {barcode} — empty after sanitization")
             self._advance()
             return
 
-        base = self._get_filename_base(barcode)
-        out_path = os.path.join(self._output_dir, f"{base}.jpg")
-        if os.path.exists(out_path):
+        if os.path.exists(self._output_path(barcode)):
             self._log(f"[SKIP] {barcode} — file already exists")
             self._advance()
             return
@@ -492,53 +645,22 @@ class App(ctk.CTk):
         self._clear_previews()
         self._set_buttons_enabled(False)
 
-        if self._auto_first:
-            thread = threading.Thread(
-                target=self._auto_first_thread, args=(barcode,), daemon=True)
-            thread.start()
+        batch_id = self._batch_id
+        fut = self._fetch_for(idx)
+        fut.add_done_callback(
+            lambda f: self._post(self._on_fetch_done, batch_id, idx, barcode, f))
+
+    def _on_fetch_done(self, batch_id: int, idx: int, barcode: str, fut: Future) -> None:
+        if batch_id != self._batch_id or self._cancelled or idx != self._current_idx:
             return
-
-        thread = threading.Thread(
-            target=self._search_thread, args=(barcode,), daemon=True)
-        thread.start()
-
-    def _auto_first_thread(self, barcode: str) -> None:
-        if self._cancelled:
+        exc = fut.exception()
+        if exc is not None:
+            self._on_search_error(barcode, str(exc))
             return
-        base = self._get_filename_base(barcode)
-        out_path = os.path.join(self._output_dir, f"{base}.jpg")
-        try:
-            result = download_first_image(barcode, out_path)
-        except Exception as exc:
-            result = BarcodeResult(barcode, "error", str(exc))
-        self.after(0, self._on_auto_first_done, result)
-
-    def _on_auto_first_done(self, result: BarcodeResult) -> None:
-        if self._cancelled:
-            return
-        if result.status == "saved":
-            self._log(f"[SAVED] {result.barcode} — {result.message}")
-            self._open_btn.configure(state="normal")
-            self._status_label.configure(text="Saved first image", text_color="#2d8a4e")
-        elif result.status == "skipped":
-            self._log(f"[SKIP] {result.barcode} — {result.message}")
-        elif result.status == "no_image":
-            self._log(f"[WARN] {result.barcode} — {result.message}")
-            self._status_label.configure(text="No images found", text_color="orange")
-        else:
-            self._log(f"[ERROR] {result.barcode} — {result.message}")
-            self._status_label.configure(text="Error saving", text_color="red")
-        self._advance()
-
-    def _search_thread(self, barcode: str) -> None:
-        try:
-            urls = search_image_urls(barcode, max_results=self._num_images)
-            previews: list[PreviewInfo] = []
-            for url in urls:
-                previews.append(download_preview_info(url, max_size=_THUMB_SIZE))
-            self.after(0, self._show_previews, barcode, urls, previews)
-        except Exception as exc:
-            self.after(0, self._on_search_error, barcode, str(exc))
+        urls, previews = fut.result()
+        self._show_previews(barcode, urls, previews)
+        if urls:
+            self._prefetch_next(idx)
 
     def _on_search_error(self, barcode: str, error: str) -> None:
         if self._cancelled:
@@ -551,6 +673,7 @@ class App(ctk.CTk):
         if self._cancelled:
             return
         self._image_urls = urls
+        self._previews = previews
         self._clear_previews()
 
         if not urls:
@@ -617,7 +740,7 @@ class App(ctk.CTk):
                 text_color="#3b8ed0",
                 font=ctk.CTkFont(size=10),
                 anchor="w",
-                command=lambda u=slot_url: webbrowser.open(u),
+                command=lambda u=slot_url: self._open_url(u),
             )
             link_btn.pack(pady=(2, 4))
 
@@ -635,6 +758,11 @@ class App(ctk.CTk):
         self._btn_skip.configure(state="normal")
         self._btn_panel.grid()
         self._fit_window()
+
+    @staticmethod
+    def _open_url(url: str) -> None:
+        if is_safe_url(url):
+            webbrowser.open(url)
 
     # ------------------------------------------------------------------ #
     #  Selection handlers                                                  #
@@ -659,40 +787,49 @@ class App(ctk.CTk):
 
     def _save_images(self, selected: list[int]) -> None:
         self._set_buttons_enabled(False)
-        self._status_label.configure(text="Downloading full images…", text_color="yellow")
+        self._status_label.configure(text="Saving images…", text_color="yellow")
         barcode = self._barcodes[self._current_idx]
+        base = self._get_filename_base(barcode)  # Tk read — keep on UI thread
+        jobs: list[tuple[str, str, bytes | None]] = []
+        for save_num, slot_idx in enumerate(selected):
+            filename = f"{base}.jpg" if save_num == 0 else f"{base}-{save_num + 1}.jpg"
+            info = self._previews[slot_idx] if slot_idx < len(self._previews) else None
+            raw = info.raw if info is not None else None
+            jobs.append((self._image_urls[slot_idx], filename, raw))
         thread = threading.Thread(
-            target=self._save_selected_thread, args=(barcode, selected), daemon=True)
+            target=self._save_selected_thread,
+            args=(self._batch_id, barcode, self._output_dir, jobs),
+            daemon=True)
         thread.start()
 
-    def _save_selected_thread(self, barcode: str, selected: list[int]) -> None:
-        base = self._get_filename_base(barcode)
+    def _save_selected_thread(
+        self,
+        batch_id: int,
+        barcode: str,
+        output_dir: str,
+        jobs: list[tuple[str, str, bytes | None]],
+    ) -> None:
         saved_count = 0
 
-        for save_num, slot_idx in enumerate(selected):
-            if self._cancelled:
+        for url, filename, raw in jobs:
+            if self._cancelled or batch_id != self._batch_id:
                 break
-            url = self._image_urls[slot_idx]
-            if save_num == 0:
-                filename = f"{base}.jpg"
-            else:
-                filename = f"{base}-{save_num + 1}.jpg"
-            out_path = os.path.join(self._output_dir, filename)
-
+            out_path = os.path.join(output_dir, filename)
             try:
-                raw = download_image_bytes(url)
-                save_as_jpg(raw, out_path)
+                # Reuse the bytes fetched for the preview; only re-download if missing
+                data = raw if raw else download_image_bytes(url)
+                save_as_jpg(data, out_path)
                 saved_count += 1
-                self.after(0, self._log, f"[SAVED] {barcode} — {filename}")
+                self._post(self._log, f"[SAVED] {barcode} — {filename}")
             except Exception as exc:
-                self.after(0, self._log, f"[ERROR] {barcode} — {filename}: {exc}")
+                self._post(self._log, f"[ERROR] {barcode} — {filename}: {exc}")
 
-        self.after(0, self._on_save_done, saved_count)
+        self._post(self._on_save_done, batch_id, saved_count)
 
-    def _on_save_done(self, saved_count: int) -> None:
+    def _on_save_done(self, batch_id: int, saved_count: int) -> None:
         if saved_count > 0:
             self._open_btn.configure(state="normal")
-        if self._cancelled:
+        if self._cancelled or batch_id != self._batch_id:
             return
         self._advance()
 
@@ -709,7 +846,8 @@ class App(ctk.CTk):
         total = len(self._barcodes)
         self._progress.set(self._current_idx / total)
         self._progress_label.configure(text=f"{self._current_idx} / {total}")
-        self.after(300, self._process_next_barcode)
+        batch_id = self._batch_id
+        self.after(30, lambda: batch_id == self._batch_id and self._process_next_barcode())
 
     def _on_batch_done(self) -> None:
         self._progress.set(1.0)
@@ -723,7 +861,8 @@ class App(ctk.CTk):
         if not self._running:
             return
 
-        remaining = max(0, len(self._barcodes) - self._current_idx)
+        done = self._auto_done if self._auto_first else self._current_idx
+        remaining = max(0, len(self._barcodes) - done)
         if not messagebox.askyesno(
             "Cancel All",
             f"Stop the current batch?\n\n{remaining} barcode(s) not yet processed. "
@@ -732,6 +871,9 @@ class App(ctk.CTk):
             return
 
         self._cancelled = True
+        self._batch_id += 1  # late results from in-flight work are now ignored
+        for fut in self._auto_futures + list(self._prefetch.values()):
+            fut.cancel()  # drops queued work; a download already running finishes its file
         self._log(f"[INFO] Cancelled by user — {remaining} barcode(s) not processed.")
         self._progress.set(0)
         self._progress_label.configure(text="")
@@ -748,6 +890,9 @@ class App(ctk.CTk):
         self._barcodes = []
         self._current_idx = 0
         self._image_urls = []
+        self._previews = []
+        self._prefetch = {}
+        self._auto_futures = []
         self._download_btn.configure(state="normal")
         self._download_all_btn.configure(state="normal")
         self._cancel_btn.configure(state="disabled")
@@ -841,10 +986,9 @@ class App(ctk.CTk):
         try:
             result = check_update_status(APP_VERSION)
         except Exception as exc:
-            self.after(0, self._on_manual_update_result, "error", None, str(exc))
+            self._post(self._on_manual_update_result, "error", None, str(exc))
             return
-        self.after(
-            0,
+        self._post(
             self._on_manual_update_result,
             result.status,
             result.info,
@@ -878,7 +1022,7 @@ class App(ctk.CTk):
         except Exception:
             return
         if info is not None:
-            self.after(0, self._prompt_update, info)
+            self._post(self._prompt_update, info)
 
     def _prompt_update(self, info: UpdateInfo) -> None:
         if self._running:
@@ -896,9 +1040,9 @@ class App(ctk.CTk):
     def _download_update_thread(self, info: UpdateInfo) -> None:
         try:
             path = download_update(info)
-            self.after(0, self._apply_downloaded_update, path)
+            self._post(self._apply_downloaded_update, path)
         except Exception as exc:
-            self.after(0, self._on_update_failed, str(exc))
+            self._post(self._on_update_failed, str(exc))
 
     def _on_update_failed(self, error: str) -> None:
         self._status_label.configure(text="Update failed", text_color="red")
@@ -913,17 +1057,29 @@ class App(ctk.CTk):
             )
             return
         try:
-            script = apply_update(path)
-            launch_helper(script)
+            exe = install_update(path)
         except Exception as exc:
-            self._on_update_failed(str(exc))
+            self._on_update_failed(
+                f"{exc}\n\nIf the app is in a protected folder (e.g. Program Files), "
+                "move it to Desktop or Documents and try again.")
             return
+        try:
+            relaunch(exe)
+        except Exception as exc:
+            messagebox.showinfo(
+                "Update installed",
+                f"Version installed, but it could not restart automatically ({exc}).\n"
+                "Please open the app again.",
+            )
         self.destroy()
 
 
 def main() -> None:
     app = App()
     app.mainloop()
+    # Worker threads may still be waiting on a slow image server; don't let
+    # them keep an invisible process alive after the window closes.
+    os._exit(0)
 
 
 if __name__ == "__main__":

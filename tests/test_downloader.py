@@ -6,24 +6,24 @@ import requests
 
 def test_search_image_urls_returns_up_to_max_results():
     import downloader
-    with patch("downloader._search_upcitemdb", return_value=["u1", "u2", "u3"]), \
+    with patch("downloader._search_upcitemdb", return_value=["https://img.example.com/u1.jpg", "https://img.example.com/u2.jpg", "https://img.example.com/u3.jpg"]), \
          patch("downloader._search_ociostock", return_value=[]), \
          patch("downloader._search_duckduckgo_images", return_value=[]), \
          patch("downloader._search_ebay_images", return_value=[]), \
          patch("downloader._search_bing_images", return_value=[]):
         result = downloader.search_image_urls("1234567890", max_results=2)
-    assert result == ["u1", "u2"]
+    assert result == ["https://img.example.com/u1.jpg", "https://img.example.com/u2.jpg"]
 
 
 def test_search_image_urls_deduplicates_across_sources():
     import downloader
-    with patch("downloader._search_upcitemdb", return_value=["u1"]), \
-         patch("downloader._search_ociostock", return_value=["u1", "u2"]), \
-         patch("downloader._search_duckduckgo_images", return_value=["u3"]), \
+    with patch("downloader._search_upcitemdb", return_value=["https://img.example.com/u1.jpg"]), \
+         patch("downloader._search_ociostock", return_value=["https://img.example.com/u1.jpg", "https://img.example.com/u2.jpg"]), \
+         patch("downloader._search_duckduckgo_images", return_value=["https://img.example.com/u3.jpg"]), \
          patch("downloader._search_ebay_images", return_value=[]), \
          patch("downloader._search_bing_images", return_value=[]):
         result = downloader.search_image_urls("1234567890", max_results=4)
-    assert result == ["u1", "u2", "u3"]
+    assert result == ["https://img.example.com/u1.jpg", "https://img.example.com/u2.jpg", "https://img.example.com/u3.jpg"]
 
 
 def test_search_image_urls_returns_empty_when_all_sources_fail():
@@ -41,11 +41,11 @@ def test_search_image_urls_falls_back_to_next_source_when_first_empty():
     import downloader
     with patch("downloader._search_upcitemdb", return_value=[]), \
          patch("downloader._search_ociostock", return_value=[]), \
-         patch("downloader._search_duckduckgo_images", return_value=["ddg1", "ddg2"]), \
+         patch("downloader._search_duckduckgo_images", return_value=["https://img.example.com/ddg1.jpg", "https://img.example.com/ddg2.jpg"]), \
          patch("downloader._search_ebay_images", return_value=[]), \
          patch("downloader._search_bing_images", return_value=[]):
         result = downloader.search_image_urls("9876543210", max_results=2)
-    assert result == ["ddg1", "ddg2"]
+    assert result == ["https://img.example.com/ddg1.jpg", "https://img.example.com/ddg2.jpg"]
 
 
 def test_sanitize_strips_whitespace():
@@ -85,7 +85,7 @@ def test_search_upcitemdb_returns_images_from_api():
     mock_resp.json.return_value = {
         "items": [{"images": ["https://img.example.com/a.jpg", "https://img.example.com/b.jpg"]}]
     }
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_upcitemdb("1234567890")
     assert result == ["https://img.example.com/a.jpg", "https://img.example.com/b.jpg"]
 
@@ -94,14 +94,14 @@ def test_search_upcitemdb_returns_empty_on_non_200():
     import downloader
     mock_resp = MagicMock()
     mock_resp.status_code = 404
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_upcitemdb("1234567890")
     assert result == []
 
 
 def test_search_upcitemdb_returns_empty_on_exception():
     import downloader
-    with patch("downloader.requests.get", side_effect=Exception("network error")):
+    with patch("downloader._http.get", side_effect=Exception("network error")):
         result = downloader._search_upcitemdb("1234567890")
     assert result == []
 
@@ -117,7 +117,7 @@ def test_search_open_food_facts_returns_images_for_known_product():
             "image_url": "https://images.openfoodfacts.org/img.jpg",
         }
     }
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_open_food_facts("3017620422003")
     assert "https://images.openfoodfacts.org/front.jpg" in result
     assert "https://images.openfoodfacts.org/img.jpg" in result
@@ -128,7 +128,7 @@ def test_search_open_food_facts_returns_empty_when_product_not_found():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {"status": 0, "product": {}}
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_open_food_facts("0000000000000")
     assert result == []
 
@@ -139,8 +139,9 @@ def test_download_image_bytes_returns_content():
     mock_response.status_code = 200
     mock_response.headers = {"Content-Type": "image/jpeg"}
     mock_response.content = b"fakeimagebytes"
+    mock_response.iter_content.return_value = [b"fakeimagebytes"]
     mock_response.raise_for_status.return_value = None
-    with patch("downloader.requests.get", return_value=mock_response):
+    with patch("downloader._http.get", return_value=mock_response):
         result = downloader.download_image_bytes("https://example.com/img.jpg")
     assert result == b"fakeimagebytes"
 
@@ -151,8 +152,9 @@ def test_download_image_bytes_raises_on_non_image_content_type():
     mock_response.status_code = 200
     mock_response.headers = {"Content-Type": "text/html"}
     mock_response.content = b"<html>"
+    mock_response.iter_content.return_value = [b"<html>"]
     mock_response.raise_for_status.return_value = None
-    with patch("downloader.requests.get", return_value=mock_response):
+    with patch("downloader._http.get", return_value=mock_response):
         with pytest.raises(ValueError, match="Content-Type"):
             downloader.download_image_bytes("https://example.com/page.html")
 
@@ -161,14 +163,14 @@ def test_download_image_bytes_raises_on_http_error():
     import downloader
     mock_response = MagicMock()
     mock_response.raise_for_status.side_effect = requests.HTTPError("404")
-    with patch("downloader.requests.get", return_value=mock_response):
+    with patch("downloader._http.get", return_value=mock_response):
         with pytest.raises(requests.HTTPError):
             downloader.download_image_bytes("https://example.com/missing.jpg")
 
 
 def test_download_image_bytes_raises_on_timeout():
     import downloader
-    with patch("downloader.requests.get", side_effect=requests.Timeout):
+    with patch("downloader._http.get", side_effect=requests.Timeout):
         with pytest.raises(requests.Timeout):
             downloader.download_image_bytes("https://example.com/slow.jpg")
 
@@ -180,15 +182,16 @@ def test_download_image_bytes_accepts_various_image_types():
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": ct}
         mock_response.content = b"bytes"
+        mock_response.iter_content.return_value = [b"bytes"]
         mock_response.raise_for_status.return_value = None
-        with patch("downloader.requests.get", return_value=mock_response):
+        with patch("downloader._http.get", return_value=mock_response):
             result = downloader.download_image_bytes("https://example.com/img")
         assert result == b"bytes"
 
 
 def test_download_image_bytes_raises_on_request_exception():
     import downloader
-    with patch("downloader.requests.get", side_effect=requests.RequestException("connection refused")):
+    with patch("downloader._http.get", side_effect=requests.RequestException("connection refused")):
         with pytest.raises(requests.RequestException):
             downloader.download_image_bytes("https://example.com/img.jpg")
 
@@ -268,7 +271,7 @@ def test_search_bing_images_extracts_murl_urls():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = html
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_bing_images("test barcode", count=4)
     assert "https://example.com/img1.jpg" in result
     assert "https://example.com/img2.jpg" in result
@@ -278,7 +281,7 @@ def test_search_bing_images_returns_empty_on_non_200():
     import downloader
     mock_resp = MagicMock()
     mock_resp.status_code = 503
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_bing_images("test barcode")
     assert result == []
 
@@ -289,7 +292,7 @@ def test_search_bing_images_respects_count_limit():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = ",".join(urls)
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_bing_images("test", count=3)
     assert len(result) <= 3
 
@@ -298,7 +301,7 @@ def test_search_ebay_images_returns_empty_on_non_200():
     import downloader
     mock_resp = MagicMock()
     mock_resp.status_code = 429
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_ebay_images("1234567890")
     assert result == []
 
@@ -312,7 +315,7 @@ def test_search_ebay_images_extracts_ebayimg_urls():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = html
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader._search_ebay_images("1234567890", count=4)
     assert "https://i.ebayimg.com/images/g/abc/s-l500.jpg" in result
     assert "https://i.ebayimg.com/images/g/def/s-l500.jpg" in result
@@ -326,8 +329,9 @@ def test_download_preview_returns_resized_thumbnail():
     Image.new("RGB", (800, 600), (0, 128, 255)).save(buf, format="JPEG")
     mock_resp = MagicMock()
     mock_resp.content = buf.getvalue()
+    mock_resp.iter_content.return_value = [buf.getvalue()]
     mock_resp.raise_for_status.return_value = None
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         result = downloader.download_preview("https://example.com/img.jpg", max_size=220)
     assert result is not None
     assert result.size[0] <= 220
@@ -336,7 +340,7 @@ def test_download_preview_returns_resized_thumbnail():
 
 def test_download_preview_returns_none_on_exception():
     import downloader
-    with patch("downloader.requests.get", side_effect=Exception("timeout")):
+    with patch("downloader._http.get", side_effect=Exception("timeout")):
         result = downloader.download_preview("https://example.com/img.jpg")
     assert result is None
 
@@ -357,8 +361,9 @@ def test_download_preview_info_reports_original_size():
     raw = buf.getvalue()
     mock_resp = MagicMock()
     mock_resp.content = raw
+    mock_resp.iter_content.return_value = [raw]
     mock_resp.raise_for_status.return_value = None
-    with patch("downloader.requests.get", return_value=mock_resp):
+    with patch("downloader._http.get", return_value=mock_resp):
         info = downloader.download_preview_info("https://example.com/img.jpg", max_size=220)
     assert info.image is not None
     assert info.image.size[0] <= 220
@@ -371,7 +376,7 @@ def test_download_preview_info_reports_original_size():
 
 def test_download_preview_info_blank_on_failure():
     import downloader
-    with patch("downloader.requests.get", side_effect=Exception("timeout")):
+    with patch("downloader._http.get", side_effect=Exception("timeout")):
         info = downloader.download_preview_info("https://example.com/img.jpg")
     assert info.image is None
     assert info.byte_size == 0
